@@ -54,6 +54,7 @@ export async function updateSession(request: NextRequest) {
       const url = request.nextUrl.clone();
       url.pathname = "/";
       url.search = "";
+      url.searchParams.set("notice", "studio_only"); // 首頁顯示「此區僅限站主使用」
       return withSupabaseCookies(NextResponse.redirect(url), supabaseResponse);
     }
   }
