@@ -35,6 +35,10 @@ yarn-error.log*
 .env.local
 !.env.local.example
 
+# 個人筆記/憑證檔,絕不入版控
+goolgle claoud ID跟密碼.txt
+*密碼*.txt
+
 # vercel
 .vercel
 

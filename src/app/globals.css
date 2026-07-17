@@ -20,3 +20,44 @@ body {
   color: var(--foreground);
   font-family: var(--font-sans);
 }
+
+/* ---- 首頁 Hero 背景:動態漸層網格 ---- */
+.hero-grid {
+  background-image:
+    linear-gradient(to right, rgb(255 255 255 / 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 0.045) 1px, transparent 1px);
+  background-size: 72px 72px;
+  mask-image: radial-gradient(ellipse 75% 60% at 50% 42%, black 30%, transparent 78%);
+}
+
+@keyframes blob-drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(6%, -5%, 0) scale(1.12);
+  }
+}
+
+.hero-blob {
+  animation: blob-drift 14s ease-in-out infinite;
+}
+.hero-blob-2 {
+  animation: blob-drift 18s ease-in-out infinite reverse;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-blob,
+  .hero-blob-2 {
+    animation: none;
+  }
+}
+
+/* 橫向作品捲動列:隱藏捲軸但保留功能 */
+.gallery-scroller {
+  scrollbar-width: none;
+}
+.gallery-scroller::-webkit-scrollbar {
+  display: none;
+}
