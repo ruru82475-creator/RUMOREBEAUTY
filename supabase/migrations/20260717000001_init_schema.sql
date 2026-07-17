@@ -5,23 +5,6 @@
 
 create extension if not exists "pgcrypto";
 
--- ------------------------------------------------------------
--- 輔助函式:判斷某使用者是否為 creator
--- security definer 避免在 policy 內查 profiles 造成 RLS 遞迴
--- ------------------------------------------------------------
-create or replace function public.is_creator(uid uuid)
-returns boolean
-language sql
-stable
-security definer
-set search_path = public
-as $$
-  select exists (
-    select 1 from public.profiles p
-    where p.id = uid and p.role = 'creator'
-  );
-$$;
-
 -- ============================================================
 -- profiles:使用者延伸資料
 -- ============================================================
@@ -38,6 +21,24 @@ create table public.profiles (
 );
 
 alter table public.profiles enable row level security;
+
+-- ------------------------------------------------------------
+-- 輔助函式:判斷某使用者是否為 creator
+-- 必須在 profiles 建表之後定義(sql 函式建立時會驗證內容)
+-- security definer 避免在 policy 內查 profiles 造成 RLS 遞迴
+-- ------------------------------------------------------------
+create or replace function public.is_creator(uid uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.profiles p
+    where p.id = uid and p.role = 'creator'
+  );
+$$;
 
 -- 本人可讀自己的 profile
 create policy "profiles_select_own"
