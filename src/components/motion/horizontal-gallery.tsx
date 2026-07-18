@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import Image from "next/image";
+import Link from "next/link";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 
@@ -78,9 +79,20 @@ export default function HorizontalGallery({ works }: { works: GalleryWork[] }) {
           <p className="mb-2 text-xs tracking-[0.35em] text-brand">PORTFOLIO</p>
           <h2 className="font-serif text-3xl sm:text-4xl">精選作品</h2>
         </div>
-        <p className="hidden pb-1 text-xs text-foreground/40 md:block">
-          繼續往下捲動瀏覽 →
-        </p>
+        <nav className="flex gap-4 pb-1 text-sm" aria-label="作品集頁面">
+          <Link
+            href="/works/beauty"
+            className="text-foreground/55 underline-offset-4 transition hover:text-brand hover:underline"
+          >
+            美容作品集
+          </Link>
+          <Link
+            href="/works/3dprint"
+            className="text-foreground/55 underline-offset-4 transition hover:text-brand hover:underline"
+          >
+            3D 列印
+          </Link>
+        </nav>
       </div>
 
       <div ref={scrollerRef} className="gallery-scroller overflow-x-auto pb-4">
