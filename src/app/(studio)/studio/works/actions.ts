@@ -98,6 +98,31 @@ export async function saveWork(input: WorkInput): Promise<ActionResult> {
   return { ok: true };
 }
 
+// 設定/移除首頁 Hero 背景影片(存於站主 profile;空字串 = 移除)
+export async function updateHeroVideo(url: string): Promise<ActionResult> {
+  const parsed = mediaPath.safeParse(url);
+  if (!parsed.success) {
+    return { ok: false, error: "影片路徑有誤。" };
+  }
+  const { supabase, user } = await requireUser();
+  if (!user) return { ok: false, error: "請先登入。" };
+
+  const { error } = await supabase
+    .from("profiles")
+    .update({ hero_video_url: url || null })
+    .eq("id", user.id);
+  if (error) {
+    return {
+      ok: false,
+      error: "儲存失敗;若是第一次設定,請先執行 SQL 卡片 5 再試。",
+    };
+  }
+
+  revalidatePath("/");
+  revalidatePath("/studio/works");
+  return { ok: true };
+}
+
 export async function togglePublish(
   id: string,
   value: boolean

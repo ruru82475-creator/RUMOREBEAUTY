@@ -28,7 +28,7 @@ export default async function SiteHeader() {
     <header className="sticky top-0 z-40 border-b border-white/10 bg-background/80 backdrop-blur">
       <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4">
         <Link href="/" className="font-serif text-lg tracking-widest">
-          GlowStudio
+          回首頁
         </Link>
         {user ? (
           <UserMenu

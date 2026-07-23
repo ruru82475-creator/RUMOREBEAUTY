@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import WorksManager from "./works-manager";
+import HeroVideoManager from "./hero-video-manager";
 import type { PortfolioItem } from "@/types/portfolio";
 
 export const metadata = { title: "作品集管理 | GlowStudio" };
@@ -9,6 +10,12 @@ export default async function StudioWorksPage() {
   const {
     data: { user },
   } = await supabase.auth.getUser();
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("*")
+    .eq("id", user?.id ?? "")
+    .maybeSingle();
 
   const { data: items } = await supabase
     .from("portfolio_items")
@@ -25,6 +32,11 @@ export default async function StudioWorksPage() {
       <p className="mt-2 text-sm text-foreground/50">
         上傳、編輯、排序你的作品;打開發布開關後才會出現在對外頁面。
       </p>
+
+      <div className="mt-8">
+        <HeroVideoManager currentUrl={profile?.hero_video_url ?? ""} />
+      </div>
+
       <div className="mt-8">
         <WorksManager initialItems={(items ?? []) as PortfolioItem[]} />
       </div>

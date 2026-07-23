@@ -69,10 +69,17 @@ export default async function HomePage({
 
   const { data: works } = await supabase
     .from("portfolio_items")
-    .select("id, title, category, cover_url, video_url, media_type")
+    .select("id, title, category, description, cover_url, video_url")
     .eq("is_published", true)
     .order("sort_order", { ascending: true })
-    .limit(8);
+    .limit(24);
+
+  const beautyWorks = (works ?? [])
+    .filter((w) => w.category === "beauty")
+    .slice(0, 8);
+  const printWorks = (works ?? [])
+    .filter((w) => w.category === "3dprint")
+    .slice(0, 8);
 
   const name: string = creator?.display_name || "RUMORE BEAUTY";
   const bio: string =
@@ -80,9 +87,8 @@ export default async function HomePage({
     "以細節詮釋美。從半永久紋繡、美睫美甲到客製 3D 列印,每一件作品都為你量身打造。";
   const tagline = bio.split("\n")[0];
   const brandColor: string | undefined = creator?.brand_color;
-  const heroVideo: string | null =
-    (works ?? []).find((w) => w.media_type === "video" && w.video_url)
-      ?.video_url ?? null;
+  // Hero 背景影片:站主於後台單獨上傳指定
+  const heroVideo: string | null = creator?.hero_video_url ?? null;
   const lineUrl: string | null = creator?.line_url ?? null;
 
   const socials = [
@@ -143,8 +149,21 @@ export default async function HomePage({
         </Reveal>
       </section>
 
-      {/* 3. 精選作品:橫向滾動畫廊 */}
-      <HorizontalGallery works={(works ?? []) as GalleryWork[]} />
+      {/* 3. 精選作品:美容與 3D 列印各一個橫向滾動區塊 */}
+      <HorizontalGallery
+        works={beautyWorks as GalleryWork[]}
+        category="beauty"
+        eyebrow="PORTFOLIO・BEAUTY"
+        title="美容作品集"
+        moreHref="/works/beauty"
+      />
+      <HorizontalGallery
+        works={printWorks as GalleryWork[]}
+        category="3dprint"
+        eyebrow="PORTFOLIO・3D PRINT"
+        title="3D 列印作品集"
+        moreHref="/works/3dprint"
+      />
 
       {/* 4. 服務項目 */}
       <section className="mx-auto max-w-5xl px-4 py-20 md:py-28">

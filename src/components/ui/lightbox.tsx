@@ -4,7 +4,15 @@ import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { Maximize, Pause, Play, Volume2, VolumeX, X } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import type { PortfolioItem } from "@/types/portfolio";
+
+// Lightbox 需要的最小欄位(PortfolioItem 與首頁精選作品皆相容)
+export type LightboxItem = {
+  id: string;
+  title: string;
+  description: string | null;
+  cover_url: string | null;
+  video_url: string | null;
+};
 
 // 全螢幕 Lightbox:影片用自訂播放器(播放/進度條/靜音/全螢幕)
 // view_count 於首次播放時 +1;sessionStorage 確保同 session 只計一次
@@ -12,7 +20,7 @@ export default function Lightbox({
   item,
   onClose,
 }: {
-  item: PortfolioItem;
+  item: LightboxItem;
   onClose: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
