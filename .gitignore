@@ -36,8 +36,13 @@ yarn-error.log*
 !.env.local.example
 
 # 個人筆記/憑證檔,絕不入版控
+# 通殺:本專案不需要任何 .txt,一律不入版控(防金鑰誤傳公開 repo)
+*.txt
+*密碼*
+*金鑰*
+*API*.txt
+cloudeflare.txt
 goolgle claoud ID跟密碼.txt
-*密碼*.txt
 
 # vercel
 .vercel
