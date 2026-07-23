@@ -2,7 +2,16 @@
 
 import { z } from "zod";
 import { revalidatePath } from "next/cache";
+import { DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { createClient } from "@/lib/supabase/server";
+import { R2_BUCKET, r2Client } from "@/lib/r2";
+
+// 媒體欄位:R2 站內路徑(/api/media/...)或完整網址(相容舊資料),空字串代表未設定
+const mediaPath = z.union([
+  z.literal(""),
+  z.string().regex(/^\/api\/media\/(portfolio|projects)\/.+/),
+  z.url(),
+]);
 
 const workSchema = z.object({
   id: z.uuid().optional(),
@@ -10,8 +19,8 @@ const workSchema = z.object({
   category: z.enum(["beauty", "3dprint"]),
   description: z.string().max(2000),
   tags: z.string().max(500),
-  cover_url: z.union([z.literal(""), z.url()]),
-  video_url: z.union([z.literal(""), z.url()]),
+  cover_url: mediaPath,
+  video_url: mediaPath,
 });
 
 export type WorkInput = z.infer<typeof workSchema>;
@@ -125,13 +134,35 @@ export async function deleteWork(id: string): Promise<ActionResult> {
     .eq("creator_id", user.id);
   if (error) return { ok: false, error: "刪除失敗,請稍後再試。" };
 
-  // 一併清掉 Storage 上的檔案(盡力而為,失敗不阻擋)
-  const marker = "/object/public/portfolio/";
-  const paths = [item?.cover_url, item?.video_url]
-    .filter((url): url is string => Boolean(url && url.includes(marker)))
-    .map((url) => decodeURIComponent(url.split(marker)[1]));
-  if (paths.length > 0) {
-    await supabase.storage.from("portfolio").remove(paths);
+  // 一併清掉檔案(盡力而為,失敗不阻擋刪除)
+  const urls = [item?.cover_url, item?.video_url].filter(
+    (url): url is string => Boolean(url)
+  );
+
+  // R2 檔案(/api/media/{key})
+  const r2Marker = "/api/media/";
+  for (const url of urls) {
+    if (url.startsWith(r2Marker)) {
+      try {
+        await r2Client().send(
+          new DeleteObjectCommand({
+            Bucket: R2_BUCKET,
+            Key: url.slice(r2Marker.length),
+          })
+        );
+      } catch {
+        // 檔案清理失敗不影響刪除結果
+      }
+    }
+  }
+
+  // 舊 Supabase Storage 檔案(相容早期資料)
+  const storageMarker = "/object/public/portfolio/";
+  const storagePaths = urls
+    .filter((url) => url.includes(storageMarker))
+    .map((url) => decodeURIComponent(url.split(storageMarker)[1]));
+  if (storagePaths.length > 0) {
+    await supabase.storage.from("portfolio").remove(storagePaths);
   }
 
   revalidateWorks();

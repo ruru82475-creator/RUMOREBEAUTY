@@ -1,22 +1,14 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { Reorder } from "framer-motion";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import {
-  Eye,
-  GripVertical,
-  Loader2,
-  Pencil,
-  Plus,
-  Trash2,
-  Upload,
-} from "lucide-react";
-import { createClient } from "@/lib/supabase/client";
+import { Eye, GripVertical, Pencil, Plus, Trash2 } from "lucide-react";
+import MediaUploader from "@/components/ui/media-uploader";
 import type { PortfolioItem } from "@/types/portfolio";
 import {
   deleteWork,
@@ -355,16 +347,16 @@ function WorkForm({
             <input type="text" {...register("tags")} className={inputClass} />
           </div>
 
-          <UploadField
+          <MediaUploader
             label="封面圖片"
-            accept="image/*"
+            kind="image"
             currentUrl={coverUrl}
             onUploaded={(url) => setValue("cover_url", url)}
             onClear={() => setValue("cover_url", "")}
           />
-          <UploadField
+          <MediaUploader
             label="影片(有影片時對外頁會顯示播放)"
-            accept="video/*"
+            kind="video"
             currentUrl={videoUrl}
             onUploaded={(url) => setValue("video_url", url)}
             onClear={() => setValue("video_url", "")}
@@ -394,94 +386,6 @@ function WorkForm({
           </div>
         </form>
       </div>
-    </div>
-  );
-}
-
-// ---- 上傳欄位:目前走 Supabase Storage,之後換 R2 直傳只需改這裡 ----
-function UploadField({
-  label,
-  accept,
-  currentUrl,
-  onUploaded,
-  onClear,
-}: {
-  label: string;
-  accept: string;
-  currentUrl: string;
-  onUploaded: (url: string) => void;
-  onClear: () => void;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function handleFile(file: File) {
-    setError(null);
-    if (file.size > 50 * 1024 * 1024) {
-      setError("檔案不能超過 50MB。");
-      return;
-    }
-    setUploading(true);
-    const supabase = createClient();
-    const ext = file.name.split(".").pop() || "bin";
-    const path = `${crypto.randomUUID()}.${ext}`;
-    const { error: uploadError } = await supabase.storage
-      .from("portfolio")
-      .upload(path, file);
-    setUploading(false);
-    if (uploadError) {
-      setError("上傳失敗,請稍後再試。");
-      return;
-    }
-    const { data } = supabase.storage.from("portfolio").getPublicUrl(path);
-    onUploaded(data.publicUrl);
-  }
-
-  return (
-    <div>
-      <label className="mb-1.5 block text-sm text-foreground/70">{label}</label>
-      <div className="flex items-center gap-3">
-        <button
-          type="button"
-          onClick={() => inputRef.current?.click()}
-          disabled={uploading}
-          className="flex items-center gap-2 rounded-xl border border-white/15 px-4 py-2.5 text-sm transition hover:bg-white/5 disabled:opacity-50"
-        >
-          {uploading ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <Upload className="size-4" />
-          )}
-          {uploading ? "上傳中…" : "選擇檔案"}
-        </button>
-        {currentUrl && !uploading && (
-          <>
-            <span className="max-w-40 truncate text-xs text-foreground/45">
-              已上傳
-            </span>
-            <button
-              type="button"
-              onClick={onClear}
-              className="text-xs text-red-300 underline-offset-4 hover:underline"
-            >
-              移除
-            </button>
-          </>
-        )}
-      </div>
-      <input
-        ref={inputRef}
-        type="file"
-        accept={accept}
-        className="hidden"
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) handleFile(file);
-          e.target.value = "";
-        }}
-      />
-      {error && <p className="mt-1.5 text-sm text-red-300">{error}</p>}
     </div>
   );
 }
