@@ -11,6 +11,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1093.0",
     "@aws-sdk/s3-request-presigner": "^3.1093.0",
+    "@google/genai": "^2.13.0",
     "@hookform/resolvers": "^5.4.0",
     "@supabase/ssr": "^0.12.3",
     "@supabase/supabase-js": "^2.110.7",
