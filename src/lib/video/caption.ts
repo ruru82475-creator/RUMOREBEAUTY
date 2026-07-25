@@ -1,27 +1,32 @@
 import "server-only";
 import fs from "node:fs/promises";
 import { parse as parseFont, type Font } from "opentype.js";
-import sharp from "sharp";
+import {
+  commandsToEdges,
+  composite,
+  dilate,
+  encodePng,
+  rasterize,
+  type RGBA,
+} from "./raster";
 
 // 美術字幕 → 透明 PNG
-// 不使用 ffmpeg 的 drawtext(雲端 ffmpeg 版本不一定內建文字濾鏡),
-// 改以字型輪廓轉 SVG path 再點陣化,任何 ffmpeg 版本都能用 overlay 疊上去
+// 全程純 JavaScript(字型輪廓 → 掃描線填色 → PNG),不依賴 ffmpeg 的 drawtext,
+// 也不依賴 sharp 之類的原生套件,雲端環境不會因缺少元件而失敗
 const CANVAS_WIDTH = 1080;
-const FONT_SIZE = 72;
-const STROKE_WIDTH = 10;
-const LINE_GAP = 1.35;
+const FONT_SIZE = 74;
+const STROKE_RADIUS = 6;
+const LINE_GAP = 1.32;
 const SIDE_PADDING = 60;
+const MAX_LINES = 3;
 
-export type CaptionStyle = {
-  fill: string;
-  stroke: string;
-};
+export type CaptionStyle = { fill: RGBA; stroke: RGBA };
 
 export const CAPTION_STYLES: Record<string, CaptionStyle> = {
-  classic: { fill: "#ffffff", stroke: "rgba(0,0,0,0.75)" }, // 白字黑邊
-  rose: { fill: "#ffe9ee", stroke: "rgba(120,40,60,0.8)" }, // 玫瑰金
-  gold: { fill: "#fff3d0", stroke: "rgba(90,60,10,0.8)" }, // 香檳金
-  ink: { fill: "#1b1218", stroke: "rgba(255,255,255,0.85)" }, // 黑字白邊
+  classic: { fill: [255, 255, 255, 255], stroke: [0, 0, 0, 200] }, // 白字黑邊
+  rose: { fill: [255, 233, 238, 255], stroke: [120, 40, 60, 215] }, // 玫瑰金
+  gold: { fill: [255, 243, 208, 255], stroke: [90, 60, 10, 215] }, // 香檳金
+  ink: { fill: [27, 18, 24, 255], stroke: [255, 255, 255, 225] }, // 黑字白邊
 };
 
 let cachedFont: Font | null = null;
@@ -37,6 +42,17 @@ async function loadFont(fontPath: string): Promise<Font> {
     );
   }
   return cachedFont;
+}
+
+/** 濾掉字型沒有的字元(否則會畫成空白方框) */
+function keepSupported(font: Font, text: string): string {
+  return Array.from(text)
+    .filter((char) => {
+      if (char === "\n" || char === " ") return true;
+      return font.charToGlyphIndex(char) > 0;
+    })
+    .join("")
+    .replace(/ {2,}/g, " ");
 }
 
 /** 依畫布寬度自動斷行(中文逐字量測) */
@@ -56,10 +72,7 @@ function wrapText(
       continue;
     }
     const candidate = current + char;
-    if (
-      font.getAdvanceWidth(candidate, fontSize) > maxWidth &&
-      current !== ""
-    ) {
+    if (font.getAdvanceWidth(candidate, fontSize) > maxWidth && current !== "") {
       lines.push(current);
       current = char;
     } else {
@@ -67,47 +80,56 @@ function wrapText(
     }
   }
   if (current) lines.push(current);
-  return lines.slice(0, 3); // 最多三行
+  return lines.slice(0, MAX_LINES);
 }
 
-/**
- * 產生字幕 PNG(透明背景),回傳 PNG buffer 與尺寸
- */
+/** 產生字幕 PNG(透明背景) */
 export async function renderCaptionPng(params: {
   text: string;
   fontPath: string;
-  style?: keyof typeof CAPTION_STYLES;
+  style?: string;
 }): Promise<{ buffer: Buffer; width: number; height: number }> {
   const { text, fontPath } = params;
-  const style = CAPTION_STYLES[params.style ?? "classic"] ?? CAPTION_STYLES.classic;
+  const style =
+    CAPTION_STYLES[params.style ?? "classic"] ?? CAPTION_STYLES.classic;
 
   const font = await loadFont(fontPath);
-  const maxTextWidth = CANVAS_WIDTH - SIDE_PADDING * 2;
-  const lines = wrapText(font, text.trim(), FONT_SIZE, maxTextWidth);
+  const safeText = keepSupported(font, text.trim());
+  if (!safeText) {
+    throw new Error("字幕沒有可顯示的文字,請換一段文字再試");
+  }
+  const lines = wrapText(
+    font,
+    safeText,
+    FONT_SIZE,
+    CANVAS_WIDTH - SIDE_PADDING * 2
+  );
 
   const lineHeight = FONT_SIZE * LINE_GAP;
-  const height = Math.ceil(lineHeight * lines.length + STROKE_WIDTH * 2);
+  const height = Math.ceil(lineHeight * lines.length + STROKE_RADIUS * 2 + 16);
 
-  const paths = lines
-    .map((line, i) => {
-      const lineWidth = font.getAdvanceWidth(line, FONT_SIZE);
-      const x = (CANVAS_WIDTH - lineWidth) / 2;
-      const y = STROKE_WIDTH + FONT_SIZE + i * lineHeight;
-      return font.getPath(line, x, y, FONT_SIZE).toPathData(2);
-    })
-    .filter(Boolean);
+  // 收集所有行的字型輪廓線段
+  const edges = lines.flatMap((line, i) => {
+    const lineWidth = font.getAdvanceWidth(line, FONT_SIZE);
+    const x = (CANVAS_WIDTH - lineWidth) / 2;
+    const y = STROKE_RADIUS + 8 + FONT_SIZE + i * lineHeight;
+    return commandsToEdges(font.getPath(line, x, y, FONT_SIZE).commands);
+  });
 
-  // 先描邊再填色(librsvg 不支援 paint-order,改畫兩層)
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${CANVAS_WIDTH}" height="${height}">
-${paths
-  .map(
-    (d) =>
-      `<path d="${d}" fill="none" stroke="${style.stroke}" stroke-width="${STROKE_WIDTH}" stroke-linejoin="round" stroke-linecap="round"/>`
-  )
-  .join("\n")}
-${paths.map((d) => `<path d="${d}" fill="${style.fill}"/>`).join("\n")}
-</svg>`;
+  const fillMask = rasterize(edges, CANVAS_WIDTH, height);
+  const strokeMask = dilate(fillMask, CANVAS_WIDTH, height, STROKE_RADIUS);
+  const rgba = composite(
+    fillMask,
+    strokeMask,
+    style.fill,
+    style.stroke,
+    CANVAS_WIDTH,
+    height
+  );
 
-  const buffer = await sharp(Buffer.from(svg)).png().toBuffer();
-  return { buffer, width: CANVAS_WIDTH, height };
+  return {
+    buffer: encodePng(CANVAS_WIDTH, height, rgba),
+    width: CANVAS_WIDTH,
+    height,
+  };
 }
