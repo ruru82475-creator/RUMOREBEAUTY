@@ -17,6 +17,21 @@ import {
 type Phase = "idle" | "uploading" | "rendering";
 type Speed = 1 | 2 | 4 | 8;
 
+// 伺服器偶爾會回傳非 JSON(例如逾時的錯誤頁),統一轉成看得懂的中文訊息
+async function readJson<T>(res: Response): Promise<T> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    if (res.status === 504 || res.status === 502) {
+      throw new Error(
+        "處理時間過長而中斷了。請把縮時倍速調高(例如 4 倍或 8 倍),讓成品短一點再試一次。"
+      );
+    }
+    throw new Error(`伺服器忙碌中(代碼 ${res.status}),請稍後再試一次。`);
+  }
+}
+
 const SPEED_OPTIONS: { value: Speed; label: string }[] = [
   { value: 1, label: "原速" },
   { value: 2, label: "2 倍" },
@@ -123,14 +138,15 @@ export default function EditClient({
       headers: { "content-type": "application/json" },
       body: JSON.stringify(presignBody),
     });
-    if (!presignRes.ok) {
-      const body = await presignRes.json().catch(() => null);
-      throw new Error(body?.error ?? "取得上傳授權失敗,請再試一次。");
+    const presign = await readJson<{
+      url?: string;
+      key?: string;
+      error?: string;
+    }>(presignRes);
+    if (!presignRes.ok || !presign.url || !presign.key) {
+      throw new Error(presign.error ?? "取得上傳授權失敗,請再試一次。");
     }
-    const { url, key } = (await presignRes.json()) as {
-      url: string;
-      key: string;
-    };
+    const { url, key } = presign as { url: string; key: string };
 
     await new Promise<void>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
@@ -224,10 +240,7 @@ export default function EditClient({
       const res = await fetch(
         `/api/music/search?q=${encodeURIComponent(query || "relaxing beauty")}`
       );
-      const data = (await res.json()) as {
-        tracks?: FreeTrack[];
-        error?: string;
-      };
+      const data = await readJson<{ tracks?: FreeTrack[]; error?: string }>(res);
       if (!res.ok) throw new Error(data.error ?? "搜尋失敗");
       setResults(data.tracks ?? []);
     } catch (e) {
@@ -246,11 +259,11 @@ export default function EditClient({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ url: track.url, title: track.title }),
       });
-      const data = (await res.json()) as {
+      const data = await readJson<{
         key?: string;
         label?: string;
         error?: string;
-      };
+      }>(res);
       if (!res.ok || !data.key) throw new Error(data.error ?? "加入失敗");
       setTracks((prev) => [
         { key: data.key!, label: data.label ?? track.title },
@@ -284,7 +297,7 @@ export default function EditClient({
           musicKey: musicKey ?? undefined,
         }),
       });
-      const result = (await res.json()) as { ok?: boolean; error?: string };
+      const result = await readJson<{ ok?: boolean; error?: string }>(res);
       if (!res.ok || !result.ok) {
         throw new Error(result.error ?? "影片後製失敗,請再試一次。");
       }
