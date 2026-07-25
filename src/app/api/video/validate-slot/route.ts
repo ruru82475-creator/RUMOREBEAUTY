@@ -6,9 +6,11 @@ import { requireCreatorForKey } from "@/lib/video/access";
 import { validateSlot } from "@/lib/ai/validateSlot";
 import type { SlotUpload, TemplateSlot } from "@/types/video";
 
-// 槽位素材驗證主流程:
-// probe(長度不足直接退回,省 AI 配額)→ 抽 3 幀 → AI 檢查 → 更新專案進度
-// 全部槽位合格 → 專案狀態改為 ready
+// 槽位素材驗證主流程(寬鬆模式):
+// 上傳成功即合格,直接套用樣板後製;長度不足只給小提醒不退回
+// 想恢復「AI 嚴格把關」把 STRICT_AI_CHECK 改回 true 即可
+const STRICT_AI_CHECK = false;
+
 export const maxDuration = 60;
 
 const bodySchema = z.object({
@@ -65,11 +67,21 @@ export async function POST(request: Request) {
     const url = await presignGet(key);
     const info = await probeVideo(url);
 
-    let pass = false;
+    const tooShort =
+      info.durationSec + 0.05 < slot.validation.min_duration;
+
+    let pass: boolean;
     let feedback: string;
 
-    if (info.durationSec + 0.05 < slot.validation.min_duration) {
-      // 長度不足:直接退回,不呼叫 AI
+    if (!STRICT_AI_CHECK) {
+      // 寬鬆模式:一律合格,長度不足只提醒
+      pass = true;
+      feedback = tooShort
+        ? `影片已收到 ✓ 小提醒:這段只有 ${info.durationSec.toFixed(1)} 秒(建議 ${slot.validation.min_duration} 秒以上),後製時畫面可能會放慢或重複來補足長度。`
+        : "影片已收到 ✓ 渲染時會自動套用樣板後製。";
+    } else if (tooShort) {
+      // 嚴格模式:長度不足直接退回,不呼叫 AI
+      pass = false;
       feedback = `影片只有 ${info.durationSec.toFixed(1)} 秒,這個鏡頭至少需要 ${slot.validation.min_duration} 秒,請重新拍一段長一點的。`;
     } else {
       const frames = await extractFrames(url, info.durationSec);

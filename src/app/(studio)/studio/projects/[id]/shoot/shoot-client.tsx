@@ -253,7 +253,7 @@ export default function ShootClient({
         {phase === "validating" && (
           <div className="mb-4 flex items-center justify-center gap-3 rounded-xl border border-brand/30 bg-brand/10 px-4 py-4 text-sm">
             <Loader2 className="size-5 animate-spin text-brand" />
-            AI 檢查畫面中,約需 10~30 秒…
+            處理影片中,馬上好…
           </div>
         )}
 
