@@ -74,6 +74,104 @@ export async function extractFrames(
   return frames;
 }
 
+// ffmpeg 濾鏡參數用的路徑:統一斜線 + 冒號跳脫(Windows 磁碟機代號)
+function escFilterPath(p: string): string {
+  return p.split(path.sep).join("/").replace(/:/g, "\\:");
+}
+
+/**
+ * 單支素材後製:縮時(倍速)+ 直式構圖 + 美術字幕 + 背景音樂
+ * 回傳輸出檔的暫存路徑(呼叫端負責讀取後刪除)
+ */
+export async function renderEdit(params: {
+  videoUrl: string;
+  sourceDurationSec: number;
+  speed: number; // 1 / 2 / 4 / 8
+  caption?: string | null;
+  fontPath?: string | null;
+  musicUrl?: string | null;
+}): Promise<string> {
+  const { videoUrl, sourceDurationSec, speed, caption, fontPath, musicUrl } =
+    params;
+  const tmpDir = os.tmpdir();
+  const id = crypto.randomUUID();
+  const outPath = path.join(tmpDir, `gs-edit-${id}.mp4`);
+  const textFile = path.join(tmpDir, `gs-caption-${id}.txt`);
+
+  // 成品長度:縮時後的長度,安全上限 120 秒
+  const outDur = Math.min(sourceDurationSec / speed, 120);
+
+  const filters = [
+    `setpts=PTS/${speed}`,
+    "scale=1080:1920:force_original_aspect_ratio=increase",
+    "crop=1080:1920",
+    "fps=30",
+  ];
+
+  let hasCaption = false;
+  if (caption && caption.trim() && fontPath) {
+    await fs.writeFile(textFile, caption.trim(), "utf8");
+    hasCaption = true;
+    filters.push(
+      `drawtext=fontfile='${escFilterPath(fontPath)}':textfile='${escFilterPath(textFile)}':fontcolor=white:fontsize=68:borderw=4:bordercolor=black@0.55:x=(w-text_w)/2:y=h-th-180`
+    );
+  }
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const command = ffmpeg(videoUrl);
+      if (musicUrl) command.input(musicUrl);
+
+      const output = [
+        "-t",
+        outDur.toFixed(2),
+        "-vf",
+        filters.join(","),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "26",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+      ];
+
+      if (musicUrl) {
+        // 以背景音樂取代原始聲音(縮時後原聲會變調),結尾淡出
+        const fadeStart = Math.max(outDur - 1.5, 0);
+        output.push(
+          "-map",
+          "0:v",
+          "-map",
+          "1:a",
+          "-af",
+          `afade=t=out:st=${fadeStart.toFixed(2)}:d=1.5`,
+          "-c:a",
+          "aac",
+          "-b:a",
+          "128k",
+          "-shortest"
+        );
+      } else {
+        output.push("-an");
+      }
+
+      command
+        .outputOptions(output)
+        .on("end", () => resolve())
+        .on("error", (err) => reject(new Error(`後製失敗(${err.message})`)))
+        .save(outPath);
+    });
+
+    return outPath;
+  } finally {
+    if (hasCaption) await fs.unlink(textFile).catch(() => {});
+  }
+}
+
 /**
  * 簡易後製:各片段裁到槽位秒數、統一 1080x1920 直式 30fps,再無縫串接
  * 回傳輸出檔的暫存路徑(呼叫端負責讀取後刪除)

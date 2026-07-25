@@ -1,9 +1,15 @@
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import type { SlotUpload, TemplateSlot } from "@/types/video";
-import ShootClient from "./shoot-client";
+import EditClient from "./shoot-client";
 
-export const metadata = { title: "AI 引導拍攝 | GlowStudio" };
+export const metadata = { title: "AI 自動後製 | GlowStudio" };
+
+type EditConfig = {
+  source_key?: string;
+  speed?: number;
+  caption?: string;
+  music_key?: string | null;
+};
 
 export default async function ShootPage({
   params,
@@ -15,24 +21,27 @@ export default async function ShootPage({
 
   const { data: project } = await supabase
     .from("edit_projects")
-    .select("id, status, slot_uploads, template_id")
+    .select("*")
     .eq("id", id)
     .maybeSingle();
   if (!project) notFound();
 
   const { data: template } = await supabase
     .from("video_templates")
-    .select("name, slots")
+    .select("name")
     .eq("id", project.template_id)
     .maybeSingle();
-  if (!template) notFound();
+
+  const config = (project.edit_config ?? {}) as EditConfig;
 
   return (
-    <ShootClient
+    <EditClient
       projectId={project.id}
-      templateName={template.name}
-      slots={template.slots as TemplateSlot[]}
-      initialUploads={(project.slot_uploads ?? []) as SlotUpload[]}
+      templateName={template?.name ?? "影片專案"}
+      initialSourceKey={config.source_key ?? null}
+      initialSpeed={config.speed === 2 || config.speed === 4 || config.speed === 8 ? config.speed : 1}
+      initialCaption={config.caption ?? ""}
+      initialMusicKey={config.music_key ?? null}
     />
   );
 }

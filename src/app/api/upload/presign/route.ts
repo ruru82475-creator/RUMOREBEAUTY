@@ -4,7 +4,9 @@ import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createClient } from "@/lib/supabase/server";
 import {
+  ALLOWED_AUDIO_TYPES,
   ALLOWED_UPLOAD_TYPES,
+  MAX_AUDIO_BYTES,
   MAX_IMAGE_BYTES,
   MAX_VIDEO_BYTES,
   R2_BUCKET,
@@ -30,7 +32,27 @@ const bodySchema = z.discriminatedUnion("purpose", [
       .max(50)
       .regex(/^[\w-]+$/, "slotId 格式有誤"),
   }),
+  z.object({
+    purpose: z.literal("music"),
+    contentType: z.string(),
+    size: z.number().int().positive(),
+    name: z.string().min(1).max(60).optional(),
+  }),
 ]);
+
+async function projectBelongsToUser(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  projectId: string,
+  userId: string
+) {
+  const { data } = await supabase
+    .from("edit_projects")
+    .select("id")
+    .eq("id", projectId)
+    .eq("creator_id", userId)
+    .maybeSingle();
+  return Boolean(data);
+}
 
 export async function POST(request: Request) {
   const supabase = await createClient();
@@ -56,48 +78,69 @@ export async function POST(request: Request) {
   }
 
   const { contentType, size, purpose } = parsed.data;
-  const typeInfo = ALLOWED_UPLOAD_TYPES[contentType];
-  if (!typeInfo) {
-    return NextResponse.json(
-      { error: "不支援的檔案格式(限 MP4、MOV、JPG、PNG、WebP)" },
-      { status: 400 }
-    );
-  }
-  const maxBytes = typeInfo.kind === "video" ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
-  if (size > maxBytes) {
-    return NextResponse.json(
-      {
-        error:
-          typeInfo.kind === "video"
-            ? "影片不能超過 500MB"
-            : "圖片不能超過 20MB",
-      },
-      { status: 400 }
-    );
-  }
 
   let key: string;
-  if (purpose === "portfolio") {
-    key = `portfolio/${user.id}/${crypto.randomUUID()}.${typeInfo.ext}`;
-  } else {
-    // 剪輯專案的拍攝素材:影片限定,且專案必須屬於本人
-    if (typeInfo.kind !== "video") {
+  if (purpose === "music") {
+    // 共用音樂庫:上傳一次,所有專案都能挑選
+    const typeInfo = ALLOWED_AUDIO_TYPES[contentType];
+    if (!typeInfo) {
       return NextResponse.json(
-        { error: "拍攝素材僅接受影片檔" },
+        { error: "不支援的音樂格式(限 MP3、M4A、WAV)" },
         { status: 400 }
       );
     }
-    const { projectId, slotId } = parsed.data;
-    const { data: project } = await supabase
-      .from("edit_projects")
-      .select("id")
-      .eq("id", projectId)
-      .eq("creator_id", user.id)
-      .maybeSingle();
-    if (!project) {
-      return NextResponse.json({ error: "找不到剪輯專案" }, { status: 404 });
+    if (size > MAX_AUDIO_BYTES) {
+      return NextResponse.json(
+        { error: "音樂檔不能超過 20MB" },
+        { status: 400 }
+      );
     }
-    key = `projects/${projectId}/slots/${slotId}.${typeInfo.ext}`;
+    // 檔名保留可讀名稱(去除路徑符號),方便在音樂庫辨識
+    const safeName = (parsed.data.name ?? "track")
+      .replace(/\.[^.]+$/, "")
+      .replace(/[^\p{L}\p{N}\-_ ]/gu, "")
+      .trim()
+      .slice(0, 40)
+      .replace(/\s+/g, "-");
+    key = `music/${crypto.randomUUID().slice(0, 8)}-${safeName || "track"}.${typeInfo.ext}`;
+  } else {
+    const typeInfo = ALLOWED_UPLOAD_TYPES[contentType];
+    if (!typeInfo) {
+      return NextResponse.json(
+        { error: "不支援的檔案格式(限 MP4、MOV、JPG、PNG、WebP)" },
+        { status: 400 }
+      );
+    }
+    const maxBytes =
+      typeInfo.kind === "video" ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
+    if (size > maxBytes) {
+      return NextResponse.json(
+        {
+          error:
+            typeInfo.kind === "video"
+              ? "影片不能超過 500MB"
+              : "圖片不能超過 20MB",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (purpose === "portfolio") {
+      key = `portfolio/${user.id}/${crypto.randomUUID()}.${typeInfo.ext}`;
+    } else {
+      // 剪輯專案的素材:影片限定,且專案必須屬於本人
+      if (typeInfo.kind !== "video") {
+        return NextResponse.json(
+          { error: "拍攝素材僅接受影片檔" },
+          { status: 400 }
+        );
+      }
+      const { projectId, slotId } = parsed.data;
+      if (!(await projectBelongsToUser(supabase, projectId, user.id))) {
+        return NextResponse.json({ error: "找不到剪輯專案" }, { status: 404 });
+      }
+      key = `projects/${projectId}/slots/${slotId}.${typeInfo.ext}`;
+    }
   }
 
   const command = new PutObjectCommand({

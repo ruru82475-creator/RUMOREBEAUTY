@@ -22,8 +22,8 @@ export async function GET(
   }
   const key = parts.join("/");
 
-  if (key.startsWith("portfolio/")) {
-    // 公開作品,任何人可讀
+  if (key.startsWith("portfolio/") || key.startsWith("music/")) {
+    // 公開作品與音樂庫,任何人可讀
   } else if (key.startsWith("projects/")) {
     const supabase = await createClient();
     const {

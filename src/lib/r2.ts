@@ -43,5 +43,14 @@ export const ALLOWED_UPLOAD_TYPES: Record<
   "image/webp": { ext: "webp", kind: "image" },
 };
 
+// 背景音樂允許的格式
+export const ALLOWED_AUDIO_TYPES: Record<string, { ext: string }> = {
+  "audio/mpeg": { ext: "mp3" },
+  "audio/mp4": { ext: "m4a" },
+  "audio/x-m4a": { ext: "m4a" },
+  "audio/wav": { ext: "wav" },
+};
+
 export const MAX_VIDEO_BYTES = 500 * 1024 * 1024; // 500MB
 export const MAX_IMAGE_BYTES = 20 * 1024 * 1024; // 20MB
+export const MAX_AUDIO_BYTES = 20 * 1024 * 1024; // 20MB

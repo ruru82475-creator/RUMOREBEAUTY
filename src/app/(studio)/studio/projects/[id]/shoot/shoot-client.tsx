@@ -1,166 +1,201 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Camera,
-  Check,
-  Circle,
+  FastForward,
   ImageIcon,
   Loader2,
+  Music,
   Sparkles,
+  Type,
+  X,
 } from "lucide-react";
-import type { SlotUpload, TemplateSlot } from "@/types/video";
 
-type Phase = "idle" | "uploading" | "assigning" | "rendering";
+type Phase = "idle" | "uploading" | "rendering";
 
-// 自由上傳模式:傳一段影片 → AI 自動歸類到最合適的鏡頭槽位
-// 不必照順序、不必拍滿全部,隨時可按「產生影片」直接後製
-export default function ShootClient({
+type Speed = 1 | 2 | 4 | 8;
+
+const SPEED_OPTIONS: { value: Speed; label: string }[] = [
+  { value: 1, label: "原速" },
+  { value: 2, label: "2 倍" },
+  { value: 4, label: "4 倍" },
+  { value: 8, label: "8 倍" },
+];
+
+// AI 自動後製編輯器:上傳一支素材 → 縮時 + 美術字幕 + 背景音樂 → 產生成品
+export default function EditClient({
   projectId,
   templateName,
-  slots,
-  initialUploads,
+  initialSourceKey,
+  initialSpeed,
+  initialCaption,
+  initialMusicKey,
 }: {
   projectId: string;
   templateName: string;
-  slots: TemplateSlot[];
-  initialUploads: SlotUpload[];
+  initialSourceKey: string | null;
+  initialSpeed: Speed;
+  initialCaption: string;
+  initialMusicKey: string | null;
 }) {
   const router = useRouter();
-  const [uploads, setUploads] = useState<SlotUpload[]>(initialUploads);
+  const [sourceKey, setSourceKey] = useState<string | null>(initialSourceKey);
+  const [sourceDuration, setSourceDuration] = useState<number | null>(null);
+  const [speed, setSpeed] = useState<Speed>(initialSpeed);
+  const [caption, setCaption] = useState(initialCaption);
+  const [musicKey, setMusicKey] = useState<string | null>(initialMusicKey);
   const [phase, setPhase] = useState<Phase>("idle");
   const [progress, setProgress] = useState(0);
-  const [message, setMessage] = useState<{
-    type: "ok" | "error";
-    text: string;
-  } | null>(null);
+  const [uploadKind, setUploadKind] = useState<"video" | "music">("video");
+  const [tracks, setTracks] = useState<{ key: string; label: string }[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  // 載入共用音樂庫
+  useEffect(() => {
+    fetch("/api/music")
+      .then((r) => (r.ok ? r.json() : { tracks: [] }))
+      .then((d: { tracks?: { key: string; label: string }[] }) =>
+        setTracks(d.tracks ?? [])
+      )
+      .catch(() => {});
+  }, []);
 
   const cameraRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
+  const musicRef = useRef<HTMLInputElement>(null);
 
-  const validatedIds = new Set(
-    uploads.filter((u) => u.validated).map((u) => u.slot_id)
-  );
-  const filledCount = validatedIds.size;
   const busy = phase !== "idle";
-  const allFilled = filledCount >= slots.length;
+  const estimatedSec =
+    sourceDuration != null ? Math.min(sourceDuration / speed, 120) : null;
 
-  async function handleFile(file: File) {
+  async function uploadToR2(
+    file: File,
+    presignBody: Record<string, unknown>
+  ): Promise<string> {
+    const presignRes = await fetch("/api/upload/presign", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(presignBody),
+    });
+    if (!presignRes.ok) {
+      const body = await presignRes.json().catch(() => null);
+      throw new Error(body?.error ?? "取得上傳授權失敗,請再試一次。");
+    }
+    const { url, key } = (await presignRes.json()) as {
+      url: string;
+      key: string;
+    };
+
+    await new Promise<void>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", url);
+      xhr.setRequestHeader("Content-Type", file.type);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          setProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+      xhr.onload = () =>
+        xhr.status >= 200 && xhr.status < 300
+          ? resolve()
+          : reject(new Error(`上傳失敗(HTTP ${xhr.status})`));
+      xhr.onerror = () => reject(new Error("上傳失敗,請檢查網路連線。"));
+      xhr.send(file);
+    });
+
+    return key;
+  }
+
+  async function handleVideoFile(file: File) {
     if (busy) return;
-    setMessage(null);
-
+    setError(null);
     if (!["video/mp4", "video/quicktime"].includes(file.type)) {
-      setMessage({
-        type: "error",
-        text: "檔案格式不支援,請用手機直接錄影(MP4 / MOV)。",
-      });
+      setError("影片格式不支援,請用手機直接錄影(MP4 / MOV)。");
       return;
     }
-    if (allFilled) {
-      setMessage({
-        type: "ok",
-        text: "所有鏡頭都已有素材,直接按「產生影片」吧!",
-      });
-      return;
-    }
-
-    // 檔名用第一個空槽位命名(實際歸屬由 AI 判斷後登記)
-    const targetSlot = slots.find((s) => !validatedIds.has(s.slot_id));
-    if (!targetSlot) return;
-
     try {
+      setUploadKind("video");
       setPhase("uploading");
       setProgress(0);
-      const presignRes = await fetch("/api/upload/presign", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          purpose: "slot_upload",
-          contentType: file.type,
-          size: file.size,
-          projectId,
-          slotId: targetSlot.slot_id,
-        }),
+      const key = await uploadToR2(file, {
+        purpose: "slot_upload",
+        contentType: file.type,
+        size: file.size,
+        projectId,
+        slotId: "source",
       });
-      if (!presignRes.ok) {
-        const body = await presignRes.json().catch(() => null);
-        throw new Error(body?.error ?? "取得上傳授權失敗,請再試一次。");
-      }
-      const { url, key } = (await presignRes.json()) as {
-        url: string;
-        key: string;
-      };
+      setSourceKey(key);
 
-      await new Promise<void>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("PUT", url);
-        xhr.setRequestHeader("Content-Type", file.type);
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) {
-            setProgress(Math.round((e.loaded / e.total) * 100));
-          }
-        };
-        xhr.onload = () =>
-          xhr.status >= 200 && xhr.status < 300
-            ? resolve()
-            : reject(new Error(`上傳失敗(HTTP ${xhr.status})`));
-        xhr.onerror = () => reject(new Error("上傳失敗,請檢查網路連線。"));
-        xhr.send(file);
+      // 讀素材長度(顯示預估成品長度用;失敗不阻擋)
+      try {
+        const probeRes = await fetch("/api/video/probe", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ key }),
+        });
+        if (probeRes.ok) {
+          const info = (await probeRes.json()) as { durationSec?: number };
+          if (info.durationSec) setSourceDuration(info.durationSec);
+        }
+      } catch {}
+      setPhase("idle");
+    } catch (e) {
+      setPhase("idle");
+      setError(e instanceof Error ? e.message : "上傳失敗,請再試一次。");
+    }
+  }
+
+  async function handleMusicFile(file: File) {
+    if (busy) return;
+    setError(null);
+    const okTypes = ["audio/mpeg", "audio/mp4", "audio/x-m4a", "audio/wav"];
+    if (!okTypes.includes(file.type)) {
+      setError("音樂格式不支援(限 MP3、M4A、WAV)。");
+      return;
+    }
+    try {
+      setUploadKind("music");
+      setPhase("uploading");
+      setProgress(0);
+      const key = await uploadToR2(file, {
+        purpose: "music",
+        contentType: file.type,
+        size: file.size,
+        name: file.name,
       });
-
-      setPhase("assigning");
-      const assignRes = await fetch("/api/video/assign-slot", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ projectId, key }),
-      });
-      const result = (await assignRes.json()) as {
-        slotId?: string;
-        slotName?: string;
-        feedback?: string;
-        durationSec?: number;
-        filled?: number;
-        total?: number;
-        error?: string;
-      };
-      if (!assignRes.ok) {
-        throw new Error(result.error ?? "素材歸類失敗,請再試一次。");
-      }
-
-      setUploads((prev) => [
-        ...prev.filter((u) => u.slot_id !== result.slotId),
+      setMusicKey(key);
+      // 新曲目加進音樂庫清單
+      setTracks((prev) => [
         {
-          slot_id: result.slotId!,
-          r2_key: key,
-          duration: result.durationSec ?? null,
-          validated: true,
-          ai_feedback: result.feedback ?? null,
+          key,
+          label: file.name.replace(/\.[^.]+$/, ""),
         },
+        ...prev.filter((t) => t.key !== key),
       ]);
-      setMessage({
-        type: "ok",
-        text: `${result.feedback}(${result.filled}/${result.total})`,
-      });
       setPhase("idle");
-    } catch (error) {
+    } catch (e) {
       setPhase("idle");
-      setMessage({
-        type: "error",
-        text: error instanceof Error ? error.message : "發生錯誤,請再試一次。",
-      });
+      setError(e instanceof Error ? e.message : "音樂上傳失敗,請再試一次。");
     }
   }
 
   async function handleRender() {
-    if (busy || filledCount === 0) return;
-    setMessage(null);
+    if (busy || !sourceKey) return;
+    setError(null);
     setPhase("rendering");
     try {
       const res = await fetch("/api/video/render", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ projectId }),
+        body: JSON.stringify({
+          projectId,
+          sourceKey,
+          speed,
+          caption,
+          musicKey: musicKey ?? undefined,
+        }),
       });
       const result = (await res.json()) as { ok?: boolean; error?: string };
       if (!res.ok || !result.ok) {
@@ -168,12 +203,9 @@ export default function ShootClient({
       }
       router.push(`/studio/projects/${projectId}`);
       router.refresh();
-    } catch (error) {
+    } catch (e) {
       setPhase("idle");
-      setMessage({
-        type: "error",
-        text: error instanceof Error ? error.message : "後製失敗,請再試一次。",
-      });
+      setError(e instanceof Error ? e.message : "後製失敗,請再試一次。");
     }
   }
 
@@ -183,7 +215,9 @@ export default function ShootClient({
         <Loader2 className="size-12 animate-spin text-brand" />
         <h1 className="mt-6 font-serif text-2xl">影片後製中…</h1>
         <p className="mt-3 text-sm leading-relaxed text-foreground/60">
-          正在把 {filledCount} 段素材裁切、調整為直式構圖並串接成片,
+          正在套用{speed > 1 ? `縮時 ${speed} 倍、` : ""}
+          {caption.trim() ? "美術字幕、" : ""}
+          {musicKey ? "背景音樂、" : ""}直式構圖,
           約需 1~3 分鐘,請不要關閉此頁面。
         </p>
       </main>
@@ -191,45 +225,68 @@ export default function ShootClient({
   }
 
   return (
-    <main className="mx-auto flex min-h-[calc(100dvh-3.5rem)] max-w-md flex-col px-4 py-6">
-      {/* 頂部進度 */}
-      <div className="text-center">
-        <div className="flex items-center justify-center gap-2.5">
-          {slots.map((s, i) => {
-            const done = validatedIds.has(s.slot_id);
-            return done ? (
-              <span
-                key={s.slot_id}
-                className="flex size-7 items-center justify-center rounded-full bg-emerald-400 text-background"
-              >
-                <Check className="size-4" strokeWidth={3} />
-              </span>
-            ) : (
-              <span
-                key={s.slot_id}
-                className="flex size-7 items-center justify-center rounded-full bg-white/10 text-xs font-medium text-foreground/40"
-              >
-                {i + 1}
-              </span>
-            );
-          })}
-        </div>
-        <p className="mt-3 text-sm text-foreground/55">
-          {filledCount}/{slots.length} 段素材已就位
-        </p>
-        <p className="text-xs text-foreground/35">{templateName}</p>
-      </div>
+    <main className="mx-auto max-w-md px-4 py-6">
+      <p className="text-xs tracking-[0.3em] text-brand">AI 自動後製</p>
+      <h1 className="mt-1 font-serif text-2xl">{templateName}</h1>
 
-      {/* 上傳區 */}
-      <div className="mt-6 rounded-3xl border border-white/10 bg-white/5 p-6">
-        <h1 className="font-serif text-2xl">上傳拍攝素材</h1>
-        <p className="mt-2 text-sm leading-relaxed text-foreground/55">
-          一次傳一段,AI 會自動判斷它屬於哪個鏡頭。
-          不必照順序、不必全部拍滿 — 傳好就能直接產生影片。
-        </p>
+      {/* 1. 素材 */}
+      <section className="mt-6 rounded-3xl border border-white/10 bg-white/5 p-5">
+        <h2 className="flex items-center gap-2 font-medium">
+          <Camera className="size-4 text-brand" />
+          素材影片
+        </h2>
+
+        {sourceKey ? (
+          <div className="mt-4">
+            <video
+              src={`/api/media/${sourceKey}`}
+              controls
+              muted
+              playsInline
+              preload="metadata"
+              className="mx-auto w-full max-w-[220px] rounded-xl border border-white/10"
+            />
+            <div className="mt-3 flex items-center justify-center gap-4 text-sm">
+              {sourceDuration != null && (
+                <span className="text-foreground/50">
+                  素材 {sourceDuration.toFixed(0)} 秒
+                </span>
+              )}
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => galleryRef.current?.click()}
+                className="text-brand underline-offset-4 hover:underline"
+              >
+                更換素材
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-4 space-y-3">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => cameraRef.current?.click()}
+              className="flex w-full items-center justify-center gap-2.5 rounded-2xl bg-brand py-4 text-base font-medium text-white transition hover:opacity-90 disabled:opacity-40"
+            >
+              <Camera className="size-5" />
+              拍攝影片
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => galleryRef.current?.click()}
+              className="flex w-full items-center justify-center gap-2.5 rounded-2xl border border-white/15 py-3.5 text-sm transition hover:bg-white/5 disabled:opacity-40"
+            >
+              <ImageIcon className="size-4" />
+              從相簿選擇
+            </button>
+          </div>
+        )}
 
         {phase === "uploading" && (
-          <div className="mt-5">
+          <div className="mt-4">
             <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
               <div
                 className="h-full rounded-full bg-brand transition-all"
@@ -237,108 +294,161 @@ export default function ShootClient({
               />
             </div>
             <p className="mt-2 text-center text-sm tabular-nums text-foreground/60">
-              上傳中 {progress}%
+              {uploadKind === "music" ? "音樂" : "影片"}上傳中 {progress}%
             </p>
           </div>
         )}
+      </section>
 
-        {phase === "assigning" && (
-          <div className="mt-5 flex items-center justify-center gap-3 rounded-xl border border-brand/30 bg-brand/10 px-4 py-4 text-sm">
-            <Loader2 className="size-5 animate-spin text-brand" />
-            AI 歸類素材中…
-          </div>
-        )}
-
-        {message && (
-          <p
-            role="status"
-            className={`mt-5 rounded-xl border px-4 py-3.5 text-sm leading-relaxed ${
-              message.type === "ok"
-                ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
-                : "border-red-400/30 bg-red-400/10 text-red-200"
-            }`}
-          >
-            {message.text}
+      {/* 2. 縮時 */}
+      <section className="mt-4 rounded-3xl border border-white/10 bg-white/5 p-5">
+        <h2 className="flex items-center gap-2 font-medium">
+          <FastForward className="size-4 text-brand" />
+          縮時效果
+        </h2>
+        <div className="mt-3 grid grid-cols-4 gap-2">
+          {SPEED_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              disabled={busy}
+              onClick={() => setSpeed(opt.value)}
+              className={`rounded-xl border py-2.5 text-sm transition ${
+                speed === opt.value
+                  ? "border-brand bg-brand text-white"
+                  : "border-white/15 text-foreground/60 hover:border-brand/60"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        {estimatedSec != null && (
+          <p className="mt-3 text-sm text-foreground/50">
+            預估成品長度:約 {estimatedSec.toFixed(0)} 秒
           </p>
         )}
+      </section>
 
-        <div className="mt-5 space-y-3">
+      {/* 3. 美術字幕 */}
+      <section className="mt-4 rounded-3xl border border-white/10 bg-white/5 p-5">
+        <h2 className="flex items-center gap-2 font-medium">
+          <Type className="size-4 text-brand" />
+          美術字幕
+        </h2>
+        <input
+          type="text"
+          value={caption}
+          maxLength={40}
+          disabled={busy}
+          onChange={(e) => setCaption(e.target.value)}
+          placeholder="輸入想放在影片上的文字(可留空)"
+          className="mt-3 w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm outline-none transition placeholder:text-foreground/30 focus:border-brand"
+        />
+        {caption.trim() && (
+          <p className="mt-3 rounded-xl bg-black/40 px-4 py-3 text-center text-lg font-bold text-white">
+            {caption.trim()}
+          </p>
+        )}
+        <p className="mt-2 text-xs text-foreground/40">
+          使用可愛圓體(粉圓體),白字黑邊,顯示在影片下方
+        </p>
+      </section>
+
+      {/* 4. 背景音樂 */}
+      <section className="mt-4 rounded-3xl border border-white/10 bg-white/5 p-5">
+        <h2 className="flex items-center gap-2 font-medium">
+          <Music className="size-4 text-brand" />
+          背景音樂
+        </h2>
+        {/* 音樂庫選單 */}
+        <div className="mt-3 space-y-2">
           <button
             type="button"
-            disabled={busy || allFilled}
-            onClick={() => cameraRef.current?.click()}
-            className="flex w-full items-center justify-center gap-2.5 rounded-2xl bg-brand py-4 text-base font-medium text-white transition hover:opacity-90 disabled:opacity-40"
+            disabled={busy}
+            onClick={() => setMusicKey(null)}
+            className={`flex w-full items-center gap-3 rounded-xl border px-4 py-3 text-sm transition ${
+              musicKey === null
+                ? "border-brand bg-brand/10"
+                : "border-white/15 hover:border-brand/50"
+            }`}
           >
-            <Camera className="size-5" />
-            拍攝並上傳
+            <span
+              className={`size-4 shrink-0 rounded-full border-2 ${
+                musicKey === null ? "border-brand bg-brand" : "border-white/30"
+              }`}
+            />
+            不加音樂
           </button>
-          <button
-            type="button"
-            disabled={busy || allFilled}
-            onClick={() => galleryRef.current?.click()}
-            className="flex w-full items-center justify-center gap-2.5 rounded-2xl border border-white/15 py-3.5 text-sm transition hover:bg-white/5 disabled:opacity-40"
-          >
-            <ImageIcon className="size-4" />
-            從相簿選擇
-          </button>
-        </div>
-      </div>
 
-      {/* 槽位清單 */}
-      <div className="mt-5 space-y-2">
-        {slots.map((s, i) => {
-          const upload = uploads.find(
-            (u) => u.slot_id === s.slot_id && u.validated
-          );
-          return (
+          {tracks.map((track) => (
             <div
-              key={s.slot_id}
-              className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm"
+              key={track.key}
+              className={`flex items-center gap-3 rounded-xl border px-4 py-3 transition ${
+                musicKey === track.key
+                  ? "border-brand bg-brand/10"
+                  : "border-white/15"
+              }`}
             >
-              {upload ? (
-                <Check className="size-4 shrink-0 text-emerald-300" />
-              ) : (
-                <Circle className="size-4 shrink-0 text-foreground/20" />
-              )}
-              {/* 已收到素材:顯示第一幀縮圖 */}
-              {upload && (
-                <video
-                  src={`/api/media/${upload.r2_key}`}
-                  preload="metadata"
-                  muted
-                  playsInline
-                  className="h-12 w-8 shrink-0 rounded-md border border-white/10 object-cover"
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setMusicKey(track.key)}
+                className="flex min-w-0 flex-1 items-center gap-3 text-left text-sm"
+              >
+                <span
+                  className={`size-4 shrink-0 rounded-full border-2 ${
+                    musicKey === track.key
+                      ? "border-brand bg-brand"
+                      : "border-white/30"
+                  }`}
                 />
-              )}
-              <span className={upload ? "" : "text-foreground/45"}>
-                {i + 1}. {s.name}
-                <span className="ml-1.5 text-xs text-foreground/35">
-                  {s.duration_sec} 秒
-                </span>
-              </span>
-              {upload?.duration != null && (
-                <span className="ml-auto text-xs tabular-nums text-foreground/40">
-                  已收到 {upload.duration}s
-                </span>
-              )}
+                <span className="truncate">{track.label}</span>
+              </button>
+              <audio
+                src={`/api/media/${track.key}`}
+                controls
+                preload="none"
+                className="h-8 w-32 shrink-0"
+              />
             </div>
-          );
-        })}
-      </div>
+          ))}
+        </div>
+
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => musicRef.current?.click()}
+          className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-white/20 py-3 text-sm transition hover:border-brand/60 hover:bg-white/5 disabled:opacity-40"
+        >
+          <Music className="size-4" />
+          加入新音樂到音樂庫
+        </button>
+        <p className="mt-2 text-xs text-foreground/40">
+          音樂會取代原始聲音並在結尾淡出。免費音樂可到 YouTube 音效庫
+          (youtube.com/audiolibrary)下載無版權曲目,上傳一次之後每個專案都能選用。
+        </p>
+      </section>
+
+      {error && (
+        <p className="mt-4 rounded-xl border border-red-400/30 bg-red-400/10 px-4 py-3.5 text-sm text-red-200">
+          {error}
+        </p>
+      )}
 
       {/* 產生影片 */}
       <button
         type="button"
-        disabled={busy || filledCount === 0}
+        disabled={busy || !sourceKey}
         onClick={handleRender}
         className="mt-6 flex w-full items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-r from-brand to-[#a05a92] py-4 text-base font-medium text-white transition hover:opacity-90 disabled:opacity-40"
       >
         <Sparkles className="size-5" />
-        產生影片({filledCount} 段素材)
+        產生影片
       </button>
-      {filledCount === 0 && (
+      {!sourceKey && (
         <p className="mt-2 text-center text-xs text-foreground/40">
-          至少上傳一段素材就能產生影片
+          先上傳一支素材影片就能產生
         </p>
       )}
 
@@ -350,7 +460,7 @@ export default function ShootClient({
         className="hidden"
         onChange={(e) => {
           const file = e.target.files?.[0];
-          if (file) handleFile(file);
+          if (file) handleVideoFile(file);
           e.target.value = "";
         }}
       />
@@ -361,7 +471,18 @@ export default function ShootClient({
         className="hidden"
         onChange={(e) => {
           const file = e.target.files?.[0];
-          if (file) handleFile(file);
+          if (file) handleVideoFile(file);
+          e.target.value = "";
+        }}
+      />
+      <input
+        ref={musicRef}
+        type="file"
+        accept="audio/*"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) handleMusicFile(file);
           e.target.value = "";
         }}
       />

@@ -1,18 +1,24 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Camera, CheckCircle2, Circle } from "lucide-react";
+import { Wand2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
-import type { SlotUpload, TemplateSlot, VideoTemplate } from "@/types/video";
 
-export const metadata = { title: "剪輯專案 | GlowStudio" };
+export const metadata = { title: "影片專案 | GlowStudio" };
 
 const STATUS_LABEL: Record<string, string> = {
-  shooting: "拍攝中",
-  validating: "AI 檢查中",
-  ready: "待渲染",
-  rendering: "渲染中",
+  shooting: "編輯中",
+  validating: "處理中",
+  ready: "待產生",
+  rendering: "後製中",
   done: "已完成",
   failed: "失敗",
+};
+
+type EditConfig = {
+  source_key?: string;
+  speed?: number;
+  caption?: string;
+  music_key?: string | null;
 };
 
 export default async function ProjectPage({
@@ -25,41 +31,34 @@ export default async function ProjectPage({
 
   const { data: project } = await supabase
     .from("edit_projects")
-    .select(
-      "id, status, slot_uploads, template_id, output_url, error_message, created_at"
-    )
+    .select("*")
     .eq("id", id)
     .maybeSingle();
   if (!project) notFound();
 
   const { data: template } = await supabase
     .from("video_templates")
-    .select("id, name, description, aspect_ratio, total_duration_sec, slots")
+    .select("name, description")
     .eq("id", project.template_id)
     .maybeSingle();
-  if (!template) notFound();
 
-  const slots = (template as VideoTemplate).slots as TemplateSlot[];
-  const uploads = (project.slot_uploads ?? []) as SlotUpload[];
-  const doneCount = uploads.filter((u) => u.validated).length;
+  const config = (project.edit_config ?? {}) as EditConfig;
 
   return (
-    <main className="mx-auto max-w-3xl px-4 py-10">
+    <main className="mx-auto max-w-md px-4 py-10">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="mb-1 text-xs tracking-[0.3em] text-brand">
             VIDEO PROJECT
           </p>
-          <h1 className="font-serif text-2xl">{template.name}</h1>
+          <h1 className="font-serif text-2xl">
+            {template?.name ?? "影片專案"}
+          </h1>
         </div>
         <span className="rounded-full border border-brand/50 px-4 py-1.5 text-sm text-brand">
           {STATUS_LABEL[project.status] ?? project.status}
         </span>
       </div>
-
-      <p className="mt-3 text-sm text-foreground/50">
-        素材進度:{doneCount} / {slots.length} 段
-      </p>
 
       {/* 成品影片 */}
       {project.status === "done" && project.output_url && (
@@ -72,7 +71,7 @@ export default async function ProjectPage({
             controls
             playsInline
             preload="metadata"
-            className="mx-auto mt-4 w-full max-w-xs rounded-xl border border-white/10"
+            className="mx-auto mt-4 w-full max-w-[240px] rounded-xl border border-white/10"
           />
           <div className="mt-4 text-center">
             <a
@@ -88,66 +87,43 @@ export default async function ProjectPage({
 
       {project.status === "failed" && project.error_message && (
         <p className="mt-6 rounded-2xl border border-red-400/30 bg-red-400/10 px-5 py-4 text-sm text-red-200">
-          後製失敗:{project.error_message} — 可回上傳頁重新產生。
+          後製失敗:{project.error_message} — 可回編輯頁重新產生。
         </p>
       )}
 
-      <div className="mt-8 space-y-3">
-        {slots.map((slot, i) => {
-          const upload = uploads.find((u) => u.slot_id === slot.slot_id);
-          const isDone = Boolean(upload?.validated);
-          return (
-            <div
-              key={slot.slot_id}
-              className="flex items-start gap-4 rounded-2xl border border-white/10 bg-white/5 p-5"
-            >
-              {isDone ? (
-                <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-emerald-300" />
-              ) : (
-                <Circle className="mt-0.5 size-5 shrink-0 text-foreground/25" />
-              )}
-              <div className="min-w-0 flex-1">
-                <p className="font-medium">
-                  {i + 1}. {slot.name}
-                  <span className="ml-2 text-xs text-foreground/40">
-                    {slot.duration_sec} 秒・
-                    {slot.shot_type === "wide"
-                      ? "遠景"
-                      : slot.shot_type === "medium"
-                        ? "中景"
-                        : "特寫"}
-                  </span>
-                </p>
-                <p className="mt-1 text-sm leading-relaxed text-foreground/55">
-                  {slot.instruction}
-                </p>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      {project.status === "rendering" && (
+        <p className="mt-6 rounded-2xl border border-brand/30 bg-brand/10 px-5 py-4 text-sm text-foreground/70">
+          影片後製中,請稍候再重新整理此頁。
+        </p>
+      )}
+
+      {/* 目前設定 */}
+      {config.source_key && (
+        <dl className="mt-6 space-y-2 rounded-2xl border border-white/10 bg-white/5 p-5 text-sm">
+          <div className="flex justify-between gap-4">
+            <dt className="text-foreground/50">縮時速度</dt>
+            <dd>{config.speed && config.speed > 1 ? `${config.speed} 倍` : "原速"}</dd>
+          </div>
+          <div className="flex justify-between gap-4">
+            <dt className="text-foreground/50">美術字幕</dt>
+            <dd className="min-w-0 truncate">{config.caption?.trim() || "未設定"}</dd>
+          </div>
+          <div className="flex justify-between gap-4">
+            <dt className="text-foreground/50">背景音樂</dt>
+            <dd>{config.music_key ? "已加入" : "無"}</dd>
+          </div>
+        </dl>
+      )}
 
       <div className="mt-8 text-center">
-        {(project.status === "shooting" ||
-          project.status === "ready" ||
-          project.status === "failed" ||
-          project.status === "done") && (
+        {project.status !== "rendering" && (
           <Link
             href={`/studio/projects/${project.id}/shoot`}
             className="inline-flex items-center gap-2.5 rounded-full bg-brand px-8 py-3.5 text-sm font-medium text-white transition hover:opacity-90"
           >
-            <Camera className="size-4" />
-            {project.status === "done"
-              ? "補素材/重新產生"
-              : doneCount > 0
-                ? "繼續上傳素材"
-                : "開始上傳素材"}
+            <Wand2 className="size-4" />
+            {project.status === "done" ? "調整設定重新產生" : "開始編輯影片"}
           </Link>
-        )}
-        {project.status === "rendering" && (
-          <p className="rounded-2xl border border-brand/30 bg-brand/10 px-5 py-5 text-sm text-foreground/70">
-            影片後製中,請稍候再重新整理此頁。
-          </p>
         )}
         <p className="mt-4">
           <Link
