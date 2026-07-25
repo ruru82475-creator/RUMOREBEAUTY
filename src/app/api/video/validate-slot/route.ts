@@ -4,6 +4,7 @@ import { presignGet } from "@/lib/r2";
 import { extractFrames, probeVideo } from "@/lib/video/ffmpeg";
 import { requireCreatorForKey } from "@/lib/video/access";
 import { validateSlot } from "@/lib/ai/validateSlot";
+import { tryConsumeAIQuota } from "@/lib/ai/rateLimiter";
 import type { SlotUpload, TemplateSlot } from "@/types/video";
 
 // 槽位素材驗證主流程(寬鬆模式):
@@ -70,29 +71,42 @@ export async function POST(request: Request) {
     const tooShort =
       info.durationSec + 0.05 < slot.validation.min_duration;
 
-    let pass: boolean;
+    let validatedValue: boolean | "skipped";
     let feedback: string;
 
     if (!STRICT_AI_CHECK) {
       // 寬鬆模式:一律合格,長度不足只提醒
-      pass = true;
+      validatedValue = true;
       feedback = tooShort
         ? `影片已收到 ✓ 小提醒:這段只有 ${info.durationSec.toFixed(1)} 秒(建議 ${slot.validation.min_duration} 秒以上),後製時畫面可能會放慢或重複來補足長度。`
         : "影片已收到 ✓ 渲染時會自動套用樣板後製。";
     } else if (tooShort) {
       // 嚴格模式:長度不足直接退回,不呼叫 AI
-      pass = false;
+      validatedValue = false;
       feedback = `影片只有 ${info.durationSec.toFixed(1)} 秒,這個鏡頭至少需要 ${slot.validation.min_duration} 秒,請重新拍一段長一點的。`;
     } else {
-      const frames = await extractFrames(url, info.durationSec);
-      const result = await validateSlot({
-        frames,
-        slot,
-        durationSec: info.durationSec,
-      });
-      pass = result.pass;
-      feedback = result.feedback;
+      // 嚴格模式:配額保護 + AI 錯誤時自動放行(標記 skipped)
+      const quota = await tryConsumeAIQuota();
+      if (!quota.allowed) {
+        validatedValue = "skipped";
+        feedback = "AI 助手暫時忙碌中,已自動通過此段素材。";
+      } else {
+        try {
+          const frames = await extractFrames(url, info.durationSec);
+          const result = await validateSlot({
+            frames,
+            slot,
+            durationSec: info.durationSec,
+          });
+          validatedValue = result.pass;
+          feedback = result.feedback;
+        } catch {
+          validatedValue = "skipped";
+          feedback = "AI 助手暫時忙碌中,已自動通過此段素材。";
+        }
+      }
     }
+    const pass = validatedValue !== false;
 
     // 更新 slot_uploads(覆蓋同槽位的舊紀錄)
     const uploads = ((project.slot_uploads ?? []) as SlotUpload[]).filter(
@@ -102,7 +116,7 @@ export async function POST(request: Request) {
       slot_id: slotId,
       r2_key: key,
       duration: Math.round(info.durationSec * 10) / 10,
-      validated: pass,
+      validated: validatedValue,
       ai_feedback: feedback,
     });
 

@@ -118,6 +118,7 @@ export default function ShootClient({
       const result = (await assignRes.json()) as {
         slotId?: string;
         slotName?: string;
+        feedback?: string;
         durationSec?: number;
         filled?: number;
         total?: number;
@@ -134,12 +135,12 @@ export default function ShootClient({
           r2_key: key,
           duration: result.durationSec ?? null,
           validated: true,
-          ai_feedback: `AI 已把這段歸類為「${result.slotName}」`,
+          ai_feedback: result.feedback ?? null,
         },
       ]);
       setMessage({
         type: "ok",
-        text: `AI 已把這段歸類為「${result.slotName}」(${result.filled}/${result.total})`,
+        text: `${result.feedback}(${result.filled}/${result.total})`,
       });
       setPhase("idle");
     } catch (error) {
@@ -298,6 +299,16 @@ export default function ShootClient({
                 <Check className="size-4 shrink-0 text-emerald-300" />
               ) : (
                 <Circle className="size-4 shrink-0 text-foreground/20" />
+              )}
+              {/* 已收到素材:顯示第一幀縮圖 */}
+              {upload && (
+                <video
+                  src={`/api/media/${upload.r2_key}`}
+                  preload="metadata"
+                  muted
+                  playsInline
+                  className="h-12 w-8 shrink-0 rounded-md border border-white/10 object-cover"
+                />
               )}
               <span className={upload ? "" : "text-foreground/45"}>
                 {i + 1}. {s.name}

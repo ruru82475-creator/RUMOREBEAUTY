@@ -64,11 +64,18 @@ export async function POST(request: Request) {
     const url = await presignGet(key);
     const info = await probeVideo(url);
 
-    // 抽中段 1 幀給 AI 歸類(便宜快速;AI 不可用時自動用第一個空槽)
+    // 抽中段 1 幀給 AI 歸類(便宜快速;AI 不可用/配額用盡時自動用第一個空槽)
     const frames = await extractFrames(url, Math.max(info.durationSec, 0.1), [
       0.5,
     ]);
-    const slot = await matchSlot({ frames, candidates: emptySlots });
+    const { slot, viaAI } = await matchSlot({
+      frames,
+      candidates: emptySlots,
+    });
+
+    const feedback = viaAI
+      ? `AI 已把這段歸類為「${slot.name}」`
+      : `已把這段放入「${slot.name}」(AI 助手暫時忙碌,採自動排序)`;
 
     const nextUploads = [
       ...uploads.filter((u) => u.slot_id !== slot.slot_id),
@@ -76,8 +83,8 @@ export async function POST(request: Request) {
         slot_id: slot.slot_id,
         r2_key: key,
         duration: Math.round(info.durationSec * 10) / 10,
-        validated: true,
-        ai_feedback: `AI 已把這段歸類為「${slot.name}」`,
+        validated: viaAI ? true : ("skipped" as const),
+        ai_feedback: feedback,
       },
     ];
 
@@ -103,6 +110,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       slotId: slot.slot_id,
       slotName: slot.name,
+      feedback,
       durationSec: Math.round(info.durationSec * 10) / 10,
       filled: nextUploads.filter((u) => u.validated).length,
       total: slots.length,

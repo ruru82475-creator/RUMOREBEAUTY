@@ -27,11 +27,12 @@ export type VideoTemplate = {
 };
 
 // edit_projects.slot_uploads JSONB 陣列的單筆結構
+// validated:true=通過 / false=未通過但保留 / "skipped"=AI 忙碌自動放行
 export type SlotUpload = {
   slot_id: string;
   r2_key: string;
   duration: number | null;
-  validated: boolean;
+  validated: boolean | "skipped";
   ai_feedback: string | null;
 };
 
