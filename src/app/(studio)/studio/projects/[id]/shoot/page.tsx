@@ -8,6 +8,9 @@ type EditConfig = {
   source_key?: string;
   speed?: number;
   caption?: string;
+  caption_style?: string;
+  effect?: string;
+  transition?: string;
   music_key?: string | null;
 };
 
@@ -33,14 +36,21 @@ export default async function ShootPage({
     .maybeSingle();
 
   const config = (project.edit_config ?? {}) as EditConfig;
+  const speed =
+    config.speed === 2 || config.speed === 4 || config.speed === 8
+      ? config.speed
+      : 1;
 
   return (
     <EditClient
       projectId={project.id}
       templateName={template?.name ?? "影片專案"}
       initialSourceKey={config.source_key ?? null}
-      initialSpeed={config.speed === 2 || config.speed === 4 || config.speed === 8 ? config.speed : 1}
+      initialSpeed={speed}
       initialCaption={config.caption ?? ""}
+      initialCaptionStyle={config.caption_style ?? "classic"}
+      initialEffect={config.effect ?? "none"}
+      initialTransition={config.transition ?? "fade"}
       initialMusicKey={config.music_key ?? null}
     />
   );

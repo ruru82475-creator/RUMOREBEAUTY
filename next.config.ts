@@ -2,7 +2,12 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   // ffmpeg 相關套件含原生執行檔,不可被 bundler 打包
-  serverExternalPackages: ["fluent-ffmpeg", "ffmpeg-static", "ffprobe-static"],
+  serverExternalPackages: [
+    "fluent-ffmpeg",
+    "ffmpeg-static",
+    "ffprobe-static",
+    "sharp",
+  ],
   // 影片相關 API 在雲端執行時需要:ffmpeg/ffprobe 執行檔與中文字型檔
   outputFileTracingIncludes: {
     "/api/video/**": [

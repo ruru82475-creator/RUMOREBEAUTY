@@ -1,27 +1,33 @@
 import { NextResponse } from "next/server";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { z } from "zod";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { createClient } from "@/lib/supabase/server";
 import { presignGet, R2_BUCKET, r2Client } from "@/lib/r2";
-import { probeVideo, renderEdit } from "@/lib/video/ffmpeg";
+import { probeVideo, renderEdit, VIDEO_EFFECTS } from "@/lib/video/ffmpeg";
+import { CAPTION_STYLES, renderCaptionPng } from "@/lib/video/caption";
 
-// 產生成品影片(單支素材後製):縮時 + 直式構圖 + 美術字幕 + 背景音樂
-// 成品上傳 R2,專案狀態 done
-// 注意:Vercel Hobby 方案函式上限 60 秒,長素材請提高倍速或改用較短素材
+// 產生成品影片:縮時 + 直式構圖 + 風格濾鏡 + 轉場 + 美術字幕 + 背景音樂
+// 注意:Vercel Hobby 方案函式上限 60 秒,長素材請提高倍速
 export const maxDuration = 60;
 
-const FONT_PATH = path.join(
-  process.cwd(),
-  "src/assets/fonts/jf-openhuninn.ttf"
-);
+const FONT_PATH = path.join(process.cwd(), "src/assets/fonts/jf-openhuninn.ttf");
 
 const bodySchema = z.object({
   projectId: z.uuid(),
   sourceKey: z.string().min(3).max(500),
   speed: z.union([z.literal(1), z.literal(2), z.literal(4), z.literal(8)]),
-  caption: z.string().max(40).optional().default(""),
+  caption: z.string().max(60).optional().default(""),
+  captionStyle: z.enum(Object.keys(CAPTION_STYLES) as [string, ...string[]])
+    .optional()
+    .default("classic"),
+  effect: z.enum(Object.keys(VIDEO_EFFECTS) as [string, ...string[]])
+    .optional()
+    .default("none"),
+  transition: z.enum(["none", "fade", "zoom"]).optional().default("fade"),
   musicKey: z.string().min(3).max(500).optional(),
 });
 
@@ -31,7 +37,16 @@ export async function POST(request: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: "參數有誤" }, { status: 400 });
   }
-  const { projectId, sourceKey, speed, caption, musicKey } = parsed.data;
+  const {
+    projectId,
+    sourceKey,
+    speed,
+    caption,
+    captionStyle,
+    effect,
+    transition,
+    musicKey,
+  } = parsed.data;
 
   if (!sourceKey.startsWith(`projects/${projectId}/slots/`)) {
     return NextResponse.json({ error: "素材與專案不符" }, { status: 400 });
@@ -78,11 +93,16 @@ export async function POST(request: Request) {
         source_key: sourceKey,
         speed,
         caption,
+        caption_style: captionStyle,
+        effect,
+        transition,
         music_key: musicKey ?? null,
       },
     })
     .eq("id", projectId)
     .eq("creator_id", user.id);
+
+  let captionPngPath: string | null = null;
 
   try {
     const videoUrl = await presignGet(sourceKey, 3600);
@@ -91,13 +111,28 @@ export async function POST(request: Request) {
       throw new Error("讀不到素材長度,請重新上傳影片");
     }
 
+    // 美術字幕:先畫成透明 PNG,再由 ffmpeg 疊上(不依賴 drawtext)
+    if (caption.trim()) {
+      const { buffer } = await renderCaptionPng({
+        text: caption,
+        fontPath: FONT_PATH,
+        style: captionStyle,
+      });
+      captionPngPath = path.join(
+        os.tmpdir(),
+        `gs-caption-${crypto.randomUUID()}.png`
+      );
+      await fs.writeFile(captionPngPath, buffer);
+    }
+
     const musicUrl = musicKey ? await presignGet(musicKey, 3600) : null;
     const outPath = await renderEdit({
       videoUrl,
       sourceDurationSec: info.durationSec,
       speed,
-      caption,
-      fontPath: FONT_PATH,
+      effect,
+      transition,
+      captionPngPath,
       musicUrl,
     });
 
@@ -135,5 +170,7 @@ export async function POST(request: Request) {
       .eq("id", projectId)
       .eq("creator_id", user.id);
     return NextResponse.json({ error: message }, { status: 500 });
+  } finally {
+    if (captionPngPath) await fs.unlink(captionPngPath).catch(() => {});
   }
 }

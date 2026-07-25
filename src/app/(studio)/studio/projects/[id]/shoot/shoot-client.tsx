@@ -8,13 +8,13 @@ import {
   ImageIcon,
   Loader2,
   Music,
+  Search,
   Sparkles,
   Type,
-  X,
+  Wand2,
 } from "lucide-react";
 
 type Phase = "idle" | "uploading" | "rendering";
-
 type Speed = 1 | 2 | 4 | 8;
 
 const SPEED_OPTIONS: { value: Speed; label: string }[] = [
@@ -24,13 +24,46 @@ const SPEED_OPTIONS: { value: Speed; label: string }[] = [
   { value: 8, label: "8 倍" },
 ];
 
-// AI 自動後製編輯器:上傳一支素材 → 縮時 + 美術字幕 + 背景音樂 → 產生成品
+const EFFECTS = [
+  { value: "none", label: "原始畫面", preview: "" },
+  { value: "bright", label: "明亮通透", preview: "brightness(1.08) contrast(1.12) saturate(1.15)" },
+  { value: "warm", label: "暖膚色", preview: "sepia(0.18) saturate(1.15)" },
+  { value: "vivid", label: "高飽和", preview: "saturate(1.45) contrast(1.08)" },
+  { value: "film", label: "黑白電影", preview: "grayscale(1) contrast(1.2)" },
+];
+
+const TRANSITIONS = [
+  { value: "none", label: "無" },
+  { value: "fade", label: "淡入淡出" },
+  { value: "zoom", label: "緩慢推近" },
+];
+
+const CAPTION_STYLES = [
+  { value: "classic", label: "白字黑邊", fill: "#ffffff", shadow: "0 0 6px rgba(0,0,0,.9)" },
+  { value: "rose", label: "玫瑰金", fill: "#ffe9ee", shadow: "0 0 6px rgba(120,40,60,.95)" },
+  { value: "gold", label: "香檳金", fill: "#fff3d0", shadow: "0 0 6px rgba(90,60,10,.95)" },
+  { value: "ink", label: "黑字白邊", fill: "#1b1218", shadow: "0 0 6px rgba(255,255,255,.95)" },
+];
+
+type Track = { key: string; label: string };
+type FreeTrack = {
+  id: string;
+  title: string;
+  creator: string;
+  license: string;
+  durationSec: number | null;
+  url: string;
+};
+
 export default function EditClient({
   projectId,
   templateName,
   initialSourceKey,
   initialSpeed,
   initialCaption,
+  initialCaptionStyle,
+  initialEffect,
+  initialTransition,
   initialMusicKey,
 }: {
   projectId: string;
@@ -38,29 +71,32 @@ export default function EditClient({
   initialSourceKey: string | null;
   initialSpeed: Speed;
   initialCaption: string;
+  initialCaptionStyle: string;
+  initialEffect: string;
+  initialTransition: string;
   initialMusicKey: string | null;
 }) {
   const router = useRouter();
   const [sourceKey, setSourceKey] = useState<string | null>(initialSourceKey);
   const [sourceDuration, setSourceDuration] = useState<number | null>(null);
   const [speed, setSpeed] = useState<Speed>(initialSpeed);
+  const [effect, setEffect] = useState(initialEffect);
+  const [transition, setTransition] = useState(initialTransition);
   const [caption, setCaption] = useState(initialCaption);
+  const [captionStyle, setCaptionStyle] = useState(initialCaptionStyle);
   const [musicKey, setMusicKey] = useState<string | null>(initialMusicKey);
+  const [tracks, setTracks] = useState<Track[]>([]);
+
   const [phase, setPhase] = useState<Phase>("idle");
   const [progress, setProgress] = useState(0);
   const [uploadKind, setUploadKind] = useState<"video" | "music">("video");
-  const [tracks, setTracks] = useState<{ key: string; label: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  // 載入共用音樂庫
-  useEffect(() => {
-    fetch("/api/music")
-      .then((r) => (r.ok ? r.json() : { tracks: [] }))
-      .then((d: { tracks?: { key: string; label: string }[] }) =>
-        setTracks(d.tracks ?? [])
-      )
-      .catch(() => {});
-  }, []);
+  // 免費音樂搜尋
+  const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [results, setResults] = useState<FreeTrack[]>([]);
+  const [importingId, setImportingId] = useState<string | null>(null);
 
   const cameraRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
@@ -69,6 +105,14 @@ export default function EditClient({
   const busy = phase !== "idle";
   const estimatedSec =
     sourceDuration != null ? Math.min(sourceDuration / speed, 120) : null;
+  const tooLong = estimatedSec != null && estimatedSec > 45;
+
+  useEffect(() => {
+    fetch("/api/music")
+      .then((r) => (r.ok ? r.json() : { tracks: [] }))
+      .then((d: { tracks?: Track[] }) => setTracks(d.tracks ?? []))
+      .catch(() => {});
+  }, []);
 
   async function uploadToR2(
     file: File,
@@ -127,8 +171,6 @@ export default function EditClient({
         slotId: "source",
       });
       setSourceKey(key);
-
-      // 讀素材長度(顯示預估成品長度用;失敗不阻擋)
       try {
         const probeRes = await fetch("/api/video/probe", {
           method: "POST",
@@ -165,19 +207,61 @@ export default function EditClient({
         size: file.size,
         name: file.name,
       });
+      const label = file.name.replace(/\.[^.]+$/, "");
+      setTracks((prev) => [{ key, label }, ...prev.filter((t) => t.key !== key)]);
       setMusicKey(key);
-      // 新曲目加進音樂庫清單
-      setTracks((prev) => [
-        {
-          key,
-          label: file.name.replace(/\.[^.]+$/, ""),
-        },
-        ...prev.filter((t) => t.key !== key),
-      ]);
       setPhase("idle");
     } catch (e) {
       setPhase("idle");
       setError(e instanceof Error ? e.message : "音樂上傳失敗,請再試一次。");
+    }
+  }
+
+  async function searchMusic() {
+    setSearching(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/music/search?q=${encodeURIComponent(query || "relaxing beauty")}`
+      );
+      const data = (await res.json()) as {
+        tracks?: FreeTrack[];
+        error?: string;
+      };
+      if (!res.ok) throw new Error(data.error ?? "搜尋失敗");
+      setResults(data.tracks ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "音樂搜尋失敗");
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function importTrack(track: FreeTrack) {
+    setImportingId(track.id);
+    setError(null);
+    try {
+      const res = await fetch("/api/music/import", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: track.url, title: track.title }),
+      });
+      const data = (await res.json()) as {
+        key?: string;
+        label?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.key) throw new Error(data.error ?? "加入失敗");
+      setTracks((prev) => [
+        { key: data.key!, label: data.label ?? track.title },
+        ...prev.filter((t) => t.key !== data.key),
+      ]);
+      setMusicKey(data.key);
+      setResults([]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "加入音樂庫失敗");
+    } finally {
+      setImportingId(null);
     }
   }
 
@@ -194,6 +278,9 @@ export default function EditClient({
           sourceKey,
           speed,
           caption,
+          captionStyle,
+          effect,
+          transition,
           musicKey: musicKey ?? undefined,
         }),
       });
@@ -216,6 +303,7 @@ export default function EditClient({
         <h1 className="mt-6 font-serif text-2xl">影片後製中…</h1>
         <p className="mt-3 text-sm leading-relaxed text-foreground/60">
           正在套用{speed > 1 ? `縮時 ${speed} 倍、` : ""}
+          {effect !== "none" ? "風格濾鏡、" : ""}
           {caption.trim() ? "美術字幕、" : ""}
           {musicKey ? "背景音樂、" : ""}直式構圖,
           約需 1~3 分鐘,請不要關閉此頁面。
@@ -224,12 +312,16 @@ export default function EditClient({
     );
   }
 
+  const activeCaptionStyle =
+    CAPTION_STYLES.find((s) => s.value === captionStyle) ?? CAPTION_STYLES[0];
+  const activeEffect = EFFECTS.find((e) => e.value === effect) ?? EFFECTS[0];
+
   return (
     <main className="mx-auto max-w-md px-4 py-6">
       <p className="text-xs tracking-[0.3em] text-brand">AI 自動後製</p>
       <h1 className="mt-1 font-serif text-2xl">{templateName}</h1>
 
-      {/* 1. 素材 */}
+      {/* 素材 */}
       <section className="mt-6 rounded-3xl border border-white/10 bg-white/5 p-5">
         <h2 className="flex items-center gap-2 font-medium">
           <Camera className="size-4 text-brand" />
@@ -244,6 +336,7 @@ export default function EditClient({
               muted
               playsInline
               preload="metadata"
+              style={{ filter: activeEffect.preview || undefined }}
               className="mx-auto w-full max-w-[220px] rounded-xl border border-white/10"
             />
             <div className="mt-3 flex items-center justify-center gap-4 text-sm">
@@ -300,7 +393,7 @@ export default function EditClient({
         )}
       </section>
 
-      {/* 2. 縮時 */}
+      {/* 縮時 */}
       <section className="mt-4 rounded-3xl border border-white/10 bg-white/5 p-5">
         <h2 className="flex items-center gap-2 font-medium">
           <FastForward className="size-4 text-brand" />
@@ -324,13 +417,60 @@ export default function EditClient({
           ))}
         </div>
         {estimatedSec != null && (
-          <p className="mt-3 text-sm text-foreground/50">
+          <p
+            className={`mt-3 text-sm ${tooLong ? "text-amber-300" : "text-foreground/50"}`}
+          >
             預估成品長度:約 {estimatedSec.toFixed(0)} 秒
+            {tooLong && " — 成品較長,建議提高倍速以免後製逾時"}
           </p>
         )}
       </section>
 
-      {/* 3. 美術字幕 */}
+      {/* 畫面風格 */}
+      <section className="mt-4 rounded-3xl border border-white/10 bg-white/5 p-5">
+        <h2 className="flex items-center gap-2 font-medium">
+          <Wand2 className="size-4 text-brand" />
+          畫面風格
+        </h2>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {EFFECTS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              disabled={busy}
+              onClick={() => setEffect(opt.value)}
+              className={`rounded-full border px-4 py-2 text-sm transition ${
+                effect === opt.value
+                  ? "border-brand bg-brand text-white"
+                  : "border-white/15 text-foreground/60 hover:border-brand/60"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
+        <h3 className="mt-5 text-sm text-foreground/70">開場 / 結尾轉場</h3>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {TRANSITIONS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              disabled={busy}
+              onClick={() => setTransition(opt.value)}
+              className={`rounded-full border px-4 py-2 text-sm transition ${
+                transition === opt.value
+                  ? "border-brand bg-brand text-white"
+                  : "border-white/15 text-foreground/60 hover:border-brand/60"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {/* 美術字幕 */}
       <section className="mt-4 rounded-3xl border border-white/10 bg-white/5 p-5">
         <h2 className="flex items-center gap-2 font-medium">
           <Type className="size-4 text-brand" />
@@ -339,29 +479,53 @@ export default function EditClient({
         <input
           type="text"
           value={caption}
-          maxLength={40}
+          maxLength={60}
           disabled={busy}
           onChange={(e) => setCaption(e.target.value)}
           placeholder="輸入想放在影片上的文字(可留空)"
           className="mt-3 w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm outline-none transition placeholder:text-foreground/30 focus:border-brand"
         />
+        <div className="mt-3 flex flex-wrap gap-2">
+          {CAPTION_STYLES.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              disabled={busy}
+              onClick={() => setCaptionStyle(opt.value)}
+              className={`rounded-full border px-3.5 py-1.5 text-xs transition ${
+                captionStyle === opt.value
+                  ? "border-brand bg-brand text-white"
+                  : "border-white/15 text-foreground/60 hover:border-brand/60"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
         {caption.trim() && (
-          <p className="mt-3 rounded-xl bg-black/40 px-4 py-3 text-center text-lg font-bold text-white">
+          <p
+            className="mt-3 rounded-xl bg-black/50 px-4 py-4 text-center text-xl font-bold leading-snug"
+            style={{
+              color: activeCaptionStyle.fill,
+              textShadow: activeCaptionStyle.shadow,
+            }}
+          >
             {caption.trim()}
           </p>
         )}
         <p className="mt-2 text-xs text-foreground/40">
-          使用可愛圓體(粉圓體),白字黑邊,顯示在影片下方
+          圓潤可愛的粉圓體,自動斷行(最多三行),顯示在影片下方
         </p>
       </section>
 
-      {/* 4. 背景音樂 */}
+      {/* 背景音樂 */}
       <section className="mt-4 rounded-3xl border border-white/10 bg-white/5 p-5">
         <h2 className="flex items-center gap-2 font-medium">
           <Music className="size-4 text-brand" />
           背景音樂
         </h2>
-        {/* 音樂庫選單 */}
+
+        {/* 音樂庫 */}
         <div className="mt-3 space-y-2">
           <button
             type="button"
@@ -409,10 +573,77 @@ export default function EditClient({
                 src={`/api/media/${track.key}`}
                 controls
                 preload="none"
-                className="h-8 w-32 shrink-0"
+                className="h-8 w-28 shrink-0"
               />
             </div>
           ))}
+        </div>
+
+        {/* 免費音樂搜尋(Openverse:CC0 / 公眾領域 / CC-BY) */}
+        <div className="mt-4 rounded-2xl border border-white/10 bg-background/40 p-4">
+          <p className="text-sm text-foreground/70">搜尋免費授權音樂</p>
+          <div className="mt-2 flex gap-2">
+            <input
+              type="text"
+              value={query}
+              disabled={busy || searching}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  searchMusic();
+                }
+              }}
+              placeholder="例:relaxing piano、upbeat"
+              className="min-w-0 flex-1 rounded-xl border border-white/15 bg-white/5 px-3.5 py-2.5 text-sm outline-none placeholder:text-foreground/30 focus:border-brand"
+            />
+            <button
+              type="button"
+              disabled={busy || searching}
+              onClick={searchMusic}
+              className="flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2.5 text-sm text-white transition hover:opacity-90 disabled:opacity-40"
+            >
+              {searching ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Search className="size-4" />
+              )}
+              搜尋
+            </button>
+          </div>
+
+          {results.length > 0 && (
+            <ul className="mt-3 space-y-2">
+              {results.map((track) => (
+                <li
+                  key={track.id}
+                  className="rounded-xl border border-white/10 bg-white/5 p-3"
+                >
+                  <p className="truncate text-sm">{track.title}</p>
+                  <p className="mt-0.5 truncate text-xs text-foreground/45">
+                    {track.creator}・{track.license}
+                    {track.durationSec ? `・${track.durationSec} 秒` : ""}
+                  </p>
+                  <div className="mt-2 flex items-center gap-2">
+                    <audio
+                      src={track.url}
+                      controls
+                      preload="none"
+                      className="h-8 min-w-0 flex-1"
+                    />
+                    <button
+                      type="button"
+                      disabled={importingId !== null}
+                      onClick={() => importTrack(track)}
+                      className="shrink-0 rounded-lg border border-brand px-3 py-1.5 text-xs text-brand transition hover:bg-brand hover:text-white disabled:opacity-40"
+                    >
+                      {importingId === track.id ? "加入中…" : "加入音樂庫"}
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
 
         <button
@@ -422,11 +653,11 @@ export default function EditClient({
           className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-white/20 py-3 text-sm transition hover:border-brand/60 hover:bg-white/5 disabled:opacity-40"
         >
           <Music className="size-4" />
-          加入新音樂到音樂庫
+          或上傳自己的音樂
         </button>
         <p className="mt-2 text-xs text-foreground/40">
-          音樂會取代原始聲音並在結尾淡出。免費音樂可到 YouTube 音效庫
-          (youtube.com/audiolibrary)下載無版權曲目,上傳一次之後每個專案都能選用。
+          音樂會取代原始聲音並在結尾淡出。搜尋結果來自 Openverse
+          開放授權素材庫,加入音樂庫後每個專案都能重複選用。
         </p>
       </section>
 
@@ -436,7 +667,6 @@ export default function EditClient({
         </p>
       )}
 
-      {/* 產生影片 */}
       <button
         type="button"
         disabled={busy || !sourceKey}
