@@ -14,7 +14,10 @@ const nextConfig: NextConfig = {
       "./node_modules/ffmpeg-static/**",
       "./node_modules/ffprobe-static/bin/linux/**",
       "./src/assets/fonts/**",
+      // sharp 的原生二進位檔(雲端為 linux-x64),不含進來會在載入時崩潰
+      "./node_modules/@img/**",
     ],
+    "/api/diag/**": ["./node_modules/@img/**", "./src/assets/fonts/**"],
   },
   images: {
     // 作品圖片來源:Supabase Storage 與 Cloudflare R2
