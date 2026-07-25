@@ -20,7 +20,7 @@ const sections = [
     icon: Clapperboard,
     title: "影片工作室",
     description: "選樣板、AI 引導拍攝、自動剪輯",
-    href: null,
+    href: "/studio/templates",
   },
   {
     icon: Send,
