@@ -1,23 +1,21 @@
 "use client";
 
 import { useRef, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Camera,
   Check,
-  CheckCircle2,
-  Clock,
+  Circle,
   ImageIcon,
   Loader2,
-  PartyPopper,
-  RotateCcw,
+  Sparkles,
 } from "lucide-react";
 import type { SlotUpload, TemplateSlot } from "@/types/video";
 
-type Phase = "idle" | "uploading" | "validating" | "failed" | "passed" | "alldone";
+type Phase = "idle" | "uploading" | "assigning" | "rendering";
 
-// AI 引導式拍攝:逐槽位 拍攝 → R2 直傳 → AI 驗證 → 下一鏡頭
+// 自由上傳模式:傳一段影片 → AI 自動歸類到最合適的鏡頭槽位
+// 不必照順序、不必拍滿全部,隨時可按「產生影片」直接後製
 export default function ShootClient({
   projectId,
   templateName,
@@ -31,18 +29,12 @@ export default function ShootClient({
 }) {
   const router = useRouter();
   const [uploads, setUploads] = useState<SlotUpload[]>(initialUploads);
-
-  const firstIncomplete = slots.findIndex(
-    (s) => !initialUploads.some((u) => u.slot_id === s.slot_id && u.validated)
-  );
-  const [activeIndex, setActiveIndex] = useState(
-    firstIncomplete === -1 ? 0 : firstIncomplete
-  );
-  const [phase, setPhase] = useState<Phase>(
-    firstIncomplete === -1 ? "alldone" : "idle"
-  );
+  const [phase, setPhase] = useState<Phase>("idle");
   const [progress, setProgress] = useState(0);
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [message, setMessage] = useState<{
+    type: "ok" | "error";
+    text: string;
+  } | null>(null);
 
   const cameraRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
@@ -50,20 +42,34 @@ export default function ShootClient({
   const validatedIds = new Set(
     uploads.filter((u) => u.validated).map((u) => u.slot_id)
   );
-  const slot = slots[activeIndex];
+  const filledCount = validatedIds.size;
+  const busy = phase !== "idle";
+  const allFilled = filledCount >= slots.length;
 
   async function handleFile(file: File) {
-    if (!slot || phase === "uploading" || phase === "validating") return;
-    setFeedback(null);
+    if (busy) return;
+    setMessage(null);
 
     if (!["video/mp4", "video/quicktime"].includes(file.type)) {
-      setPhase("failed");
-      setFeedback("檔案格式不支援,請用手機直接錄影(MP4 / MOV)。");
+      setMessage({
+        type: "error",
+        text: "檔案格式不支援,請用手機直接錄影(MP4 / MOV)。",
+      });
+      return;
+    }
+    if (allFilled) {
+      setMessage({
+        type: "ok",
+        text: "所有鏡頭都已有素材,直接按「產生影片」吧!",
+      });
       return;
     }
 
+    // 檔名用第一個空槽位命名(實際歸屬由 AI 判斷後登記)
+    const targetSlot = slots.find((s) => !validatedIds.has(s.slot_id));
+    if (!targetSlot) return;
+
     try {
-      // 1. 取得上傳授權
       setPhase("uploading");
       setProgress(0);
       const presignRes = await fetch("/api/upload/presign", {
@@ -74,7 +80,7 @@ export default function ShootClient({
           contentType: file.type,
           size: file.size,
           projectId,
-          slotId: slot.slot_id,
+          slotId: targetSlot.slot_id,
         }),
       });
       if (!presignRes.ok) {
@@ -86,7 +92,6 @@ export default function ShootClient({
         key: string;
       };
 
-      // 2. 直傳 R2
       await new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open("PUT", url);
@@ -104,79 +109,85 @@ export default function ShootClient({
         xhr.send(file);
       });
 
-      // 3. AI 驗證
-      setPhase("validating");
-      const validateRes = await fetch("/api/video/validate-slot", {
+      setPhase("assigning");
+      const assignRes = await fetch("/api/video/assign-slot", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ projectId, slotId: slot.slot_id, key }),
+        body: JSON.stringify({ projectId, key }),
       });
-      const result = (await validateRes.json()) as {
-        pass?: boolean;
-        feedback?: string;
+      const result = (await assignRes.json()) as {
+        slotId?: string;
+        slotName?: string;
         durationSec?: number;
+        filled?: number;
+        total?: number;
         error?: string;
       };
-      if (!validateRes.ok) {
-        throw new Error(result.error ?? "驗證失敗,請再試一次。");
+      if (!assignRes.ok) {
+        throw new Error(result.error ?? "素材歸類失敗,請再試一次。");
       }
 
       setUploads((prev) => [
-        ...prev.filter((u) => u.slot_id !== slot.slot_id),
+        ...prev.filter((u) => u.slot_id !== result.slotId),
         {
-          slot_id: slot.slot_id,
+          slot_id: result.slotId!,
           r2_key: key,
           duration: result.durationSec ?? null,
-          validated: Boolean(result.pass),
-          ai_feedback: result.feedback ?? null,
+          validated: true,
+          ai_feedback: `AI 已把這段歸類為「${result.slotName}」`,
         },
       ]);
-      setFeedback(result.feedback ?? null);
-      setPhase(result.pass ? "passed" : "failed");
-    } catch (error) {
-      setPhase("failed");
-      setFeedback(
-        error instanceof Error ? error.message : "發生錯誤,請再試一次。"
-      );
-    }
-  }
-
-  function goNext() {
-    const doneIds = new Set(
-      uploads.filter((u) => u.validated).map((u) => u.slot_id)
-    );
-    const next = slots.findIndex((s) => !doneIds.has(s.slot_id));
-    setFeedback(null);
-    setProgress(0);
-    if (next === -1) {
-      setPhase("alldone");
-      router.refresh();
-    } else {
-      setActiveIndex(next);
+      setMessage({
+        type: "ok",
+        text: `AI 已把這段歸類為「${result.slotName}」(${result.filled}/${result.total})`,
+      });
       setPhase("idle");
+    } catch (error) {
+      setPhase("idle");
+      setMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "發生錯誤,請再試一次。",
+      });
     }
   }
 
-  if (phase === "alldone") {
+  async function handleRender() {
+    if (busy || filledCount === 0) return;
+    setMessage(null);
+    setPhase("rendering");
+    try {
+      const res = await fetch("/api/video/render", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId }),
+      });
+      const result = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || !result.ok) {
+        throw new Error(result.error ?? "影片後製失敗,請再試一次。");
+      }
+      router.push(`/studio/projects/${projectId}`);
+      router.refresh();
+    } catch (error) {
+      setPhase("idle");
+      setMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "後製失敗,請再試一次。",
+      });
+    }
+  }
+
+  if (phase === "rendering") {
     return (
       <main className="mx-auto flex min-h-[calc(100dvh-3.5rem)] max-w-md flex-col items-center justify-center px-4 text-center">
-        <PartyPopper className="size-12 text-brand" />
-        <h1 className="mt-6 font-serif text-2xl">素材全部合格!</h1>
+        <Loader2 className="size-12 animate-spin text-brand" />
+        <h1 className="mt-6 font-serif text-2xl">影片後製中…</h1>
         <p className="mt-3 text-sm leading-relaxed text-foreground/60">
-          {slots.length} 個鏡頭都通過 AI 檢查,專案已進入「待渲染」狀態。
-          自動剪輯功能將在下一階段開通。
+          正在把 {filledCount} 段素材裁切、調整為直式構圖並串接成片,
+          約需 1~3 分鐘,請不要關閉此頁面。
         </p>
-        <Link
-          href={`/studio/projects/${projectId}`}
-          className="mt-8 rounded-full bg-brand px-8 py-3 text-sm font-medium text-white transition hover:opacity-90"
-        >
-          回專案頁
-        </Link>
       </main>
     );
   }
-
-  const busy = phase === "uploading" || phase === "validating";
 
   return (
     <main className="mx-auto flex min-h-[calc(100dvh-3.5rem)] max-w-md flex-col px-4 py-6">
@@ -185,7 +196,6 @@ export default function ShootClient({
         <div className="flex items-center justify-center gap-2.5">
           {slots.map((s, i) => {
             const done = validatedIds.has(s.slot_id);
-            const current = i === activeIndex;
             return done ? (
               <span
                 key={s.slot_id}
@@ -196,11 +206,7 @@ export default function ShootClient({
             ) : (
               <span
                 key={s.slot_id}
-                className={`flex size-7 items-center justify-center rounded-full text-xs font-medium ${
-                  current
-                    ? "bg-brand text-white ring-4 ring-brand/25 motion-safe:animate-pulse"
-                    : "bg-white/10 text-foreground/40"
-                }`}
+                className="flex size-7 items-center justify-center rounded-full bg-white/10 text-xs font-medium text-foreground/40"
               >
                 {i + 1}
               </span>
@@ -208,36 +214,21 @@ export default function ShootClient({
           })}
         </div>
         <p className="mt-3 text-sm text-foreground/55">
-          第 {activeIndex + 1}/{slots.length} 步 — {slot.name}
+          {filledCount}/{slots.length} 段素材已就位
         </p>
         <p className="text-xs text-foreground/35">{templateName}</p>
       </div>
 
-      {/* 主卡片 */}
-      <div className="mt-6 flex flex-1 flex-col rounded-3xl border border-white/10 bg-white/5 p-6">
-        <h1 className="font-serif text-3xl">{slot.name}</h1>
-        <p className="mt-4 text-base leading-relaxed text-foreground/85">
-          {slot.instruction}
+      {/* 上傳區 */}
+      <div className="mt-6 rounded-3xl border border-white/10 bg-white/5 p-6">
+        <h1 className="font-serif text-2xl">上傳拍攝素材</h1>
+        <p className="mt-2 text-sm leading-relaxed text-foreground/55">
+          一次傳一段,AI 會自動判斷它屬於哪個鏡頭。
+          不必照順序、不必全部拍滿 — 傳好就能直接產生影片。
         </p>
 
-        <div className="mt-6 flex items-center gap-5">
-          <ShotFrame type={slot.shot_type} />
-          <div className="min-w-0 flex-1 space-y-3 text-sm">
-            <p className="flex items-center gap-2 text-foreground/70">
-              <Clock className="size-4 shrink-0 text-brand" />
-              建議拍攝至少 {slot.validation.min_duration} 秒
-            </p>
-            <p className="leading-relaxed text-foreground/55">
-              💡 {slot.composition_hint}
-            </p>
-          </div>
-        </div>
-
-        <div className="flex-1" />
-
-        {/* 狀態回饋 */}
         {phase === "uploading" && (
-          <div className="mb-4">
+          <div className="mt-5">
             <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
               <div
                 className="h-full rounded-full bg-brand transition-all"
@@ -250,64 +241,96 @@ export default function ShootClient({
           </div>
         )}
 
-        {phase === "validating" && (
-          <div className="mb-4 flex items-center justify-center gap-3 rounded-xl border border-brand/30 bg-brand/10 px-4 py-4 text-sm">
+        {phase === "assigning" && (
+          <div className="mt-5 flex items-center justify-center gap-3 rounded-xl border border-brand/30 bg-brand/10 px-4 py-4 text-sm">
             <Loader2 className="size-5 animate-spin text-brand" />
-            處理影片中,馬上好…
+            AI 歸類素材中…
           </div>
         )}
 
-        {phase === "failed" && feedback && (
-          <div className="mb-4 rounded-xl border border-red-400/30 bg-red-400/10 px-4 py-4 text-sm leading-relaxed text-red-200">
-            {feedback}
-          </div>
+        {message && (
+          <p
+            role="status"
+            className={`mt-5 rounded-xl border px-4 py-3.5 text-sm leading-relaxed ${
+              message.type === "ok"
+                ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
+                : "border-red-400/30 bg-red-400/10 text-red-200"
+            }`}
+          >
+            {message.text}
+          </p>
         )}
 
-        {phase === "passed" && feedback && (
-          <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-4 text-sm leading-relaxed text-emerald-200">
-            <CheckCircle2 className="mt-0.5 size-5 shrink-0" />
-            {feedback}
-          </div>
-        )}
-
-        {/* 操作按鈕 */}
-        {phase === "passed" ? (
+        <div className="mt-5 space-y-3">
           <button
             type="button"
-            onClick={goNext}
-            className="w-full rounded-2xl bg-brand py-4 text-base font-medium text-white transition hover:opacity-90"
+            disabled={busy || allFilled}
+            onClick={() => cameraRef.current?.click()}
+            className="flex w-full items-center justify-center gap-2.5 rounded-2xl bg-brand py-4 text-base font-medium text-white transition hover:opacity-90 disabled:opacity-40"
           >
-            {validatedIds.size >= slots.length ? "完成拍攝 🎉" : "下一個鏡頭 →"}
+            <Camera className="size-5" />
+            拍攝並上傳
           </button>
-        ) : (
-          <div className="space-y-3">
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => cameraRef.current?.click()}
-              className="flex w-full items-center justify-center gap-2.5 rounded-2xl bg-brand py-4 text-base font-medium text-white transition hover:opacity-90 disabled:opacity-40"
-            >
-              {phase === "failed" ? (
-                <RotateCcw className="size-5" />
-              ) : (
-                <Camera className="size-5" />
-              )}
-              {phase === "failed" ? "重新拍攝" : "上傳這段影片"}
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => galleryRef.current?.click()}
-              className="flex w-full items-center justify-center gap-2.5 rounded-2xl border border-white/15 py-3.5 text-sm transition hover:bg-white/5 disabled:opacity-40"
-            >
-              <ImageIcon className="size-4" />
-              從相簿選擇
-            </button>
-          </div>
-        )}
+          <button
+            type="button"
+            disabled={busy || allFilled}
+            onClick={() => galleryRef.current?.click()}
+            className="flex w-full items-center justify-center gap-2.5 rounded-2xl border border-white/15 py-3.5 text-sm transition hover:bg-white/5 disabled:opacity-40"
+          >
+            <ImageIcon className="size-4" />
+            從相簿選擇
+          </button>
+        </div>
       </div>
 
-      {/* 隱藏的檔案輸入:capture 直接開相機;另一個走相簿 */}
+      {/* 槽位清單 */}
+      <div className="mt-5 space-y-2">
+        {slots.map((s, i) => {
+          const upload = uploads.find(
+            (u) => u.slot_id === s.slot_id && u.validated
+          );
+          return (
+            <div
+              key={s.slot_id}
+              className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm"
+            >
+              {upload ? (
+                <Check className="size-4 shrink-0 text-emerald-300" />
+              ) : (
+                <Circle className="size-4 shrink-0 text-foreground/20" />
+              )}
+              <span className={upload ? "" : "text-foreground/45"}>
+                {i + 1}. {s.name}
+                <span className="ml-1.5 text-xs text-foreground/35">
+                  {s.duration_sec} 秒
+                </span>
+              </span>
+              {upload?.duration != null && (
+                <span className="ml-auto text-xs tabular-nums text-foreground/40">
+                  已收到 {upload.duration}s
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* 產生影片 */}
+      <button
+        type="button"
+        disabled={busy || filledCount === 0}
+        onClick={handleRender}
+        className="mt-6 flex w-full items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-r from-brand to-[#a05a92] py-4 text-base font-medium text-white transition hover:opacity-90 disabled:opacity-40"
+      >
+        <Sparkles className="size-5" />
+        產生影片({filledCount} 段素材)
+      </button>
+      {filledCount === 0 && (
+        <p className="mt-2 text-center text-xs text-foreground/40">
+          至少上傳一段素材就能產生影片
+        </p>
+      )}
+
       <input
         ref={cameraRef}
         type="file"
@@ -332,51 +355,5 @@ export default function ShootClient({
         }}
       />
     </main>
-  );
-}
-
-// 景別線框示意圖(9:16 直式取景框)
-function ShotFrame({ type }: { type: TemplateSlot["shot_type"] }) {
-  return (
-    <svg
-      viewBox="0 0 90 160"
-      className="h-36 w-auto shrink-0"
-      fill="none"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-      aria-hidden
-    >
-      <rect
-        x="3"
-        y="3"
-        width="84"
-        height="154"
-        rx="10"
-        stroke="currentColor"
-        className="text-white/20"
-      />
-      {type === "wide" && (
-        <g stroke="currentColor" className="text-brand">
-          <circle cx="45" cy="58" r="8" />
-          <line x1="45" y1="66" x2="45" y2="98" />
-          <line x1="45" y1="75" x2="32" y2="89" />
-          <line x1="45" y1="75" x2="58" y2="89" />
-          <line x1="45" y1="98" x2="34" y2="122" />
-          <line x1="45" y1="98" x2="56" y2="122" />
-        </g>
-      )}
-      {type === "medium" && (
-        <g stroke="currentColor" className="text-brand">
-          <circle cx="45" cy="56" r="15" />
-          <path d="M18 132 v-18 a27 27 0 0 1 54 0 v18" />
-        </g>
-      )}
-      {type === "close-up" && (
-        <g stroke="currentColor" className="text-brand">
-          <circle cx="42" cy="70" r="25" />
-          <line x1="60" y1="88" x2="76" y2="106" strokeWidth="5" />
-        </g>
-      )}
-    </svg>
   );
 }

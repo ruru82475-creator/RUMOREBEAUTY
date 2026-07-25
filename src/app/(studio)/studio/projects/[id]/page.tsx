@@ -25,7 +25,9 @@ export default async function ProjectPage({
 
   const { data: project } = await supabase
     .from("edit_projects")
-    .select("id, status, slot_uploads, template_id, created_at")
+    .select(
+      "id, status, slot_uploads, template_id, output_url, error_message, created_at"
+    )
     .eq("id", id)
     .maybeSingle();
   if (!project) notFound();
@@ -56,8 +58,39 @@ export default async function ProjectPage({
       </div>
 
       <p className="mt-3 text-sm text-foreground/50">
-        拍攝進度:{doneCount} / {slots.length} 個鏡頭完成
+        素材進度:{doneCount} / {slots.length} 段
       </p>
+
+      {/* 成品影片 */}
+      {project.status === "done" && project.output_url && (
+        <div className="mt-6 rounded-2xl border border-emerald-400/30 bg-emerald-400/10 p-5">
+          <p className="text-sm font-medium text-emerald-200">
+            🎉 影片已完成!
+          </p>
+          <video
+            src={project.output_url}
+            controls
+            playsInline
+            preload="metadata"
+            className="mx-auto mt-4 w-full max-w-xs rounded-xl border border-white/10"
+          />
+          <div className="mt-4 text-center">
+            <a
+              href={project.output_url}
+              download
+              className="inline-block rounded-full bg-brand px-6 py-2.5 text-sm font-medium text-white transition hover:opacity-90"
+            >
+              下載影片
+            </a>
+          </div>
+        </div>
+      )}
+
+      {project.status === "failed" && project.error_message && (
+        <p className="mt-6 rounded-2xl border border-red-400/30 bg-red-400/10 px-5 py-4 text-sm text-red-200">
+          後製失敗:{project.error_message} — 可回上傳頁重新產生。
+        </p>
+      )}
 
       <div className="mt-8 space-y-3">
         {slots.map((slot, i) => {
@@ -95,18 +128,25 @@ export default async function ProjectPage({
       </div>
 
       <div className="mt-8 text-center">
-        {project.status === "shooting" && (
+        {(project.status === "shooting" ||
+          project.status === "ready" ||
+          project.status === "failed" ||
+          project.status === "done") && (
           <Link
             href={`/studio/projects/${project.id}/shoot`}
             className="inline-flex items-center gap-2.5 rounded-full bg-brand px-8 py-3.5 text-sm font-medium text-white transition hover:opacity-90"
           >
             <Camera className="size-4" />
-            {doneCount > 0 ? "繼續 AI 引導拍攝" : "開始 AI 引導拍攝"}
+            {project.status === "done"
+              ? "補素材/重新產生"
+              : doneCount > 0
+                ? "繼續上傳素材"
+                : "開始上傳素材"}
           </Link>
         )}
-        {project.status === "ready" && (
-          <p className="rounded-2xl border border-emerald-400/30 bg-emerald-400/10 px-5 py-5 text-sm text-emerald-200">
-            素材已全部通過 AI 檢查 🎉 等待渲染 — 自動剪輯功能將在下一階段開通。
+        {project.status === "rendering" && (
+          <p className="rounded-2xl border border-brand/30 bg-brand/10 px-5 py-5 text-sm text-foreground/70">
+            影片後製中,請稍候再重新整理此頁。
           </p>
         )}
         <p className="mt-4">

@@ -37,14 +37,15 @@ export function probeVideo(url: string): Promise<VideoInfo> {
 }
 
 /**
- * 從影片抽取代表幀(10%、50%、90% 位置)
+ * 從影片抽取代表幀(預設 10%、50%、90% 位置)
  * 輸出 base64 JPEG:品質約 80,寬度縮到 512px 節省 token
  */
 export async function extractFrames(
   url: string,
-  durationSec: number
+  durationSec: number,
+  positionRatios: number[] = [0.1, 0.5, 0.9]
 ): Promise<{ base64: string; mimeType: string }[]> {
-  const positions = [0.1, 0.5, 0.9].map((p) => durationSec * p);
+  const positions = positionRatios.map((p) => durationSec * p);
   const frames: { base64: string; mimeType: string }[] = [];
 
   for (const seconds of positions) {
@@ -71,4 +72,74 @@ export async function extractFrames(
   }
 
   return frames;
+}
+
+/**
+ * 簡易後製:各片段裁到槽位秒數、統一 1080x1920 直式 30fps,再無縫串接
+ * 回傳輸出檔的暫存路徑(呼叫端負責讀取後刪除)
+ * (之後接 Remotion 時只需替換這層,前端流程不動)
+ */
+export async function renderSlots(
+  items: { url: string; durationSec: number }[]
+): Promise<string> {
+  const tmpDir = os.tmpdir();
+  const id = crypto.randomUUID();
+  const clipPaths: string[] = [];
+  const listPath = path.join(tmpDir, `gs-list-${id}.txt`);
+  const outPath = path.join(tmpDir, `gs-out-${id}.mp4`);
+
+  try {
+    for (const [i, item] of items.entries()) {
+      const clipPath = path.join(tmpDir, `gs-clip-${id}-${i}.mp4`);
+      await new Promise<void>((resolve, reject) => {
+        ffmpeg(item.url)
+          .outputOptions([
+            "-t",
+            item.durationSec.toFixed(2),
+            "-vf",
+            "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "26",
+            "-pix_fmt",
+            "yuv420p",
+            "-an",
+            "-movflags",
+            "+faststart",
+          ])
+          .on("end", () => resolve())
+          .on("error", (err) =>
+            reject(new Error(`片段處理失敗(${err.message})`))
+          )
+          .save(clipPath);
+      });
+      clipPaths.push(clipPath);
+    }
+
+    await fs.writeFile(
+      listPath,
+      clipPaths
+        .map((p) => `file '${p.split(path.sep).join("/")}'`)
+        .join("\n"),
+      "utf8"
+    );
+
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(listPath)
+        .inputOptions(["-f", "concat", "-safe", "0"])
+        .outputOptions(["-c", "copy", "-movflags", "+faststart"])
+        .on("end", () => resolve())
+        .on("error", (err) => reject(new Error(`影片串接失敗(${err.message})`)))
+        .save(outPath);
+    });
+
+    return outPath;
+  } finally {
+    await Promise.all(
+      [...clipPaths, listPath].map((p) => fs.unlink(p).catch(() => {}))
+    );
+  }
 }
