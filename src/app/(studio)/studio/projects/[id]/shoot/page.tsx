@@ -10,7 +10,9 @@ type EditConfig = {
   caption?: string;
   caption_style?: string;
   effect?: string;
+  beauty?: string;
   transition?: string;
+  music_hint?: string;
   music_key?: string | null;
 };
 
@@ -50,7 +52,9 @@ export default async function ShootPage({
       initialCaption={config.caption ?? ""}
       initialCaptionStyle={config.caption_style ?? "classic"}
       initialEffect={config.effect ?? "none"}
+      initialBeauty={config.beauty ?? "off"}
       initialTransition={config.transition ?? "fade"}
+      initialMusicHint={config.music_hint ?? ""}
       initialMusicKey={config.music_key ?? null}
     />
   );

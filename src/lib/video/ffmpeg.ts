@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegPath from "ffmpeg-static";
 import ffprobeStatic from "ffprobe-static";
+import { beautyById, presetById } from "./presets";
 
 // ffmpeg / ffprobe 影片處理工具
 // 輸入一律用 R2 預簽名 URL,不把整支影片下載進伺服器(省時間與記憶體)
@@ -101,30 +102,6 @@ export async function extractFrames(
   return frames;
 }
 
-// 影片風格濾鏡(皆為 ffmpeg 核心濾鏡,無外部相依)
-export const VIDEO_EFFECTS: Record<
-  string,
-  { label: string; chain: string[] }
-> = {
-  none: { label: "原始畫面", chain: [] },
-  bright: {
-    label: "明亮通透",
-    chain: ["eq=brightness=0.06:contrast=1.12:saturation=1.15"],
-  },
-  warm: {
-    label: "暖膚色",
-    chain: ["colorbalance=rs=0.06:gs=0.01:bs=-0.06", "eq=saturation=1.08"],
-  },
-  vivid: {
-    label: "高飽和",
-    chain: ["eq=saturation=1.45:contrast=1.08"],
-  },
-  film: {
-    label: "黑白電影",
-    chain: ["hue=s=0", "eq=contrast=1.2:brightness=0.02"],
-  },
-};
-
 export type TransitionKind = "none" | "fade" | "zoom";
 
 /**
@@ -137,6 +114,7 @@ export async function renderEdit(params: {
   sourceDurationSec: number;
   speed: number; // 1 / 2 / 4 / 8
   effect?: string;
+  beauty?: string;
   transition?: TransitionKind;
   captionPngPath?: string | null;
   musicUrl?: string | null;
@@ -146,6 +124,7 @@ export async function renderEdit(params: {
     sourceDurationSec,
     speed,
     effect = "none",
+    beauty = "off",
     transition = "fade",
     captionPngPath,
     musicUrl,
@@ -164,12 +143,15 @@ export async function renderEdit(params: {
     "fps=30",
   ];
 
-  // 風格濾鏡(只加入這個 ffmpeg 版本支援的)
-  const effectChain = VIDEO_EFFECTS[effect]?.chain ?? [];
-  for (const filter of effectChain) {
-    const name = filter.split("=")[0];
-    if (has(name)) chain.push(filter);
-  }
+  // 美顏磨皮 → 風格濾鏡(只加入這個 ffmpeg 版本支援的濾鏡)
+  const addFilters = (list: string[]) => {
+    for (const filter of list) {
+      const name = filter.split("=")[0];
+      if (has(name)) chain.push(filter);
+    }
+  };
+  addFilters(beautyById(beauty).chain);
+  addFilters(presetById(effect).chain);
 
   // 轉場:淡入淡出 / 緩慢推進
   if (transition === "zoom" && has("zoompan")) {

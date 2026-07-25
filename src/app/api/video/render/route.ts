@@ -7,7 +7,8 @@ import { z } from "zod";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { createClient } from "@/lib/supabase/server";
 import { presignGet, R2_BUCKET, r2Client } from "@/lib/r2";
-import { probeVideo, renderEdit, VIDEO_EFFECTS } from "@/lib/video/ffmpeg";
+import { probeVideo, renderEdit } from "@/lib/video/ffmpeg";
+import { BEAUTY_LEVELS, FILTER_PRESETS } from "@/lib/video/presets";
 import { CAPTION_STYLES, renderCaptionPng } from "@/lib/video/caption";
 
 // 產生成品影片:縮時 + 直式構圖 + 風格濾鏡 + 轉場 + 美術字幕 + 背景音樂
@@ -24,9 +25,14 @@ const bodySchema = z.object({
   captionStyle: z.enum(Object.keys(CAPTION_STYLES) as [string, ...string[]])
     .optional()
     .default("classic"),
-  effect: z.enum(Object.keys(VIDEO_EFFECTS) as [string, ...string[]])
+  effect: z
+    .enum(FILTER_PRESETS.map((p) => p.id) as [string, ...string[]])
     .optional()
     .default("none"),
+  beauty: z
+    .enum(BEAUTY_LEVELS.map((b) => b.id) as [string, ...string[]])
+    .optional()
+    .default("off"),
   transition: z.enum(["none", "fade", "zoom"]).optional().default("fade"),
   musicKey: z.string().min(3).max(500).optional(),
 });
@@ -44,6 +50,7 @@ export async function POST(request: Request) {
     caption,
     captionStyle,
     effect,
+    beauty,
     transition,
     musicKey,
   } = parsed.data;
@@ -95,6 +102,7 @@ export async function POST(request: Request) {
         caption,
         caption_style: captionStyle,
         effect,
+        beauty,
         transition,
         music_key: musicKey ?? null,
       },
@@ -131,6 +139,7 @@ export async function POST(request: Request) {
       sourceDurationSec: info.durationSec,
       speed,
       effect,
+      beauty,
       transition,
       captionPngPath,
       musicUrl,

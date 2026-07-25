@@ -13,6 +13,7 @@ import {
   Type,
   Wand2,
 } from "lucide-react";
+import { BEAUTY_LEVELS, FILTER_PRESETS } from "@/lib/video/presets";
 
 type Phase = "idle" | "uploading" | "rendering";
 type Speed = 1 | 2 | 4 | 8;
@@ -39,13 +40,12 @@ const SPEED_OPTIONS: { value: Speed; label: string }[] = [
   { value: 8, label: "8 倍" },
 ];
 
-const EFFECTS = [
-  { value: "none", label: "原始畫面", preview: "" },
-  { value: "bright", label: "明亮通透", preview: "brightness(1.08) contrast(1.12) saturate(1.15)" },
-  { value: "warm", label: "暖膚色", preview: "sepia(0.18) saturate(1.15)" },
-  { value: "vivid", label: "高飽和", preview: "saturate(1.45) contrast(1.08)" },
-  { value: "film", label: "黑白電影", preview: "grayscale(1) contrast(1.2)" },
-];
+const EFFECTS = FILTER_PRESETS.map((p) => ({
+  value: p.id,
+  label: p.label,
+  description: p.description,
+  preview: p.css,
+}));
 
 const TRANSITIONS = [
   { value: "none", label: "無" },
@@ -78,7 +78,9 @@ export default function EditClient({
   initialCaption,
   initialCaptionStyle,
   initialEffect,
+  initialBeauty,
   initialTransition,
+  initialMusicHint,
   initialMusicKey,
 }: {
   projectId: string;
@@ -88,7 +90,9 @@ export default function EditClient({
   initialCaption: string;
   initialCaptionStyle: string;
   initialEffect: string;
+  initialBeauty: string;
   initialTransition: string;
+  initialMusicHint: string;
   initialMusicKey: string | null;
 }) {
   const router = useRouter();
@@ -96,6 +100,7 @@ export default function EditClient({
   const [sourceDuration, setSourceDuration] = useState<number | null>(null);
   const [speed, setSpeed] = useState<Speed>(initialSpeed);
   const [effect, setEffect] = useState(initialEffect);
+  const [beauty, setBeauty] = useState(initialBeauty);
   const [transition, setTransition] = useState(initialTransition);
   const [caption, setCaption] = useState(initialCaption);
   const [captionStyle, setCaptionStyle] = useState(initialCaptionStyle);
@@ -107,8 +112,8 @@ export default function EditClient({
   const [uploadKind, setUploadKind] = useState<"video" | "music">("video");
   const [error, setError] = useState<string | null>(null);
 
-  // 免費音樂搜尋
-  const [query, setQuery] = useState("");
+  // 免費音樂搜尋(模板會建議關鍵字)
+  const [query, setQuery] = useState(initialMusicHint);
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<FreeTrack[]>([]);
   const [importingId, setImportingId] = useState<string | null>(null);
@@ -120,7 +125,9 @@ export default function EditClient({
   const busy = phase !== "idle";
   const estimatedSec =
     sourceDuration != null ? Math.min(sourceDuration / speed, 120) : null;
-  const tooLong = estimatedSec != null && estimatedSec > 45;
+  // 磨皮運算較重,開啟時成品長度的安全上限要更嚴格
+  const lengthLimit = beauty === "off" ? 45 : beauty === "strong" ? 20 : 30;
+  const tooLong = estimatedSec != null && estimatedSec > lengthLimit;
 
   useEffect(() => {
     fetch("/api/music")
@@ -293,6 +300,7 @@ export default function EditClient({
           caption,
           captionStyle,
           effect,
+          beauty,
           transition,
           musicKey: musicKey ?? undefined,
         }),
@@ -316,6 +324,7 @@ export default function EditClient({
         <h1 className="mt-6 font-serif text-2xl">影片後製中…</h1>
         <p className="mt-3 text-sm leading-relaxed text-foreground/60">
           正在套用{speed > 1 ? `縮時 ${speed} 倍、` : ""}
+          {beauty !== "off" ? "磨皮、" : ""}
           {effect !== "none" ? "風格濾鏡、" : ""}
           {caption.trim() ? "美術字幕、" : ""}
           {musicKey ? "背景音樂、" : ""}直式構圖,
@@ -439,21 +448,24 @@ export default function EditClient({
         )}
       </section>
 
-      {/* 畫面風格 */}
+      {/* 美顏磨皮 */}
       <section className="mt-4 rounded-3xl border border-white/10 bg-white/5 p-5">
         <h2 className="flex items-center gap-2 font-medium">
-          <Wand2 className="size-4 text-brand" />
-          畫面風格
+          <Sparkles className="size-4 text-brand" />
+          美顏磨皮
         </h2>
-        <div className="mt-3 flex flex-wrap gap-2">
-          {EFFECTS.map((opt) => (
+        <p className="mt-1.5 text-sm text-foreground/50">
+          柔化膚質與細紋,同時保留睫毛、指甲彩繪等細節。
+        </p>
+        <div className="mt-3 grid grid-cols-4 gap-2">
+          {BEAUTY_LEVELS.map((opt) => (
             <button
-              key={opt.value}
+              key={opt.id}
               type="button"
               disabled={busy}
-              onClick={() => setEffect(opt.value)}
-              className={`rounded-full border px-4 py-2 text-sm transition ${
-                effect === opt.value
+              onClick={() => setBeauty(opt.id)}
+              className={`rounded-xl border py-2.5 text-sm transition ${
+                beauty === opt.id
                   ? "border-brand bg-brand text-white"
                   : "border-white/15 text-foreground/60 hover:border-brand/60"
               }`}
@@ -462,6 +474,44 @@ export default function EditClient({
             </button>
           ))}
         </div>
+      </section>
+
+      {/* 畫面風格 */}
+      <section className="mt-4 rounded-3xl border border-white/10 bg-white/5 p-5">
+        <h2 className="flex items-center gap-2 font-medium">
+          <Wand2 className="size-4 text-brand" />
+          畫面風格
+        </h2>
+        <div className="mt-3 grid grid-cols-4 gap-2">
+          {EFFECTS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              disabled={busy}
+              onClick={() => setEffect(opt.value)}
+              className={`overflow-hidden rounded-xl border text-center transition ${
+                effect === opt.value
+                  ? "border-brand ring-2 ring-brand/30"
+                  : "border-white/15 hover:border-brand/60"
+              }`}
+            >
+              <span
+                className="block h-10 w-full bg-[linear-gradient(135deg,#f6d9c9_0%,#e8b4a0_40%,#b76e79_75%,#5c3a4a_100%)]"
+                style={{ filter: opt.preview || undefined }}
+              />
+              <span
+                className={`block px-1 py-1.5 text-[11px] leading-tight ${
+                  effect === opt.value ? "text-brand" : "text-foreground/60"
+                }`}
+              >
+                {opt.label}
+              </span>
+            </button>
+          ))}
+        </div>
+        <p className="mt-2 text-xs text-foreground/45">
+          {activeEffect.description}
+        </p>
 
         <h3 className="mt-5 text-sm text-foreground/70">開場 / 結尾轉場</h3>
         <div className="mt-2 flex flex-wrap gap-2">
