@@ -8,12 +8,15 @@ import {
   ImageIcon,
   Loader2,
   Music,
+  RotateCcw,
   Search,
   Sparkles,
   Type,
   Wand2,
 } from "lucide-react";
 import { BEAUTY_LEVELS, FILTER_PRESETS } from "@/lib/video/presets";
+import { CAPTION_FONTS } from "@/lib/video/fonts";
+import { CAPTION_STYLE_LABELS } from "@/lib/video/caption-styles";
 
 type Phase = "idle" | "uploading" | "rendering";
 type Speed = 1 | 2 | 4 | 8;
@@ -53,14 +56,35 @@ const TRANSITIONS = [
   { value: "zoom", label: "緩慢推近" },
 ];
 
-const CAPTION_STYLES = [
-  { value: "classic", label: "白字黑邊", fill: "#ffffff", shadow: "0 0 6px rgba(0,0,0,.9)" },
-  { value: "rose", label: "玫瑰金", fill: "#ffe9ee", shadow: "0 0 6px rgba(120,40,60,.95)" },
-  { value: "gold", label: "香檳金", fill: "#fff3d0", shadow: "0 0 6px rgba(90,60,10,.95)" },
-  { value: "ink", label: "黑字白邊", fill: "#1b1218", shadow: "0 0 6px rgba(255,255,255,.95)" },
-];
+const CAPTION_STYLES = CAPTION_STYLE_LABELS.map((s) => ({
+  value: s.id,
+  label: s.label,
+  fill: s.cssFill,
+  shadow: s.cssShadow,
+}));
 
 type Track = { key: string; label: string };
+
+type Recommendation = {
+  templateName: string | null;
+  filterPreset: string;
+  beauty: string;
+  subtitleStyle: string;
+  subtitleFont: string;
+  caption: string;
+  musicMood: string;
+  reason: string;
+};
+
+// 套用 AI 建議前的設定快照(供「復原」使用)
+type Snapshot = {
+  effect: string;
+  beauty: string;
+  captionStyle: string;
+  captionFont: string;
+  caption: string;
+  query: string;
+};
 type FreeTrack = {
   id: string;
   title: string;
@@ -77,6 +101,7 @@ export default function EditClient({
   initialSpeed,
   initialCaption,
   initialCaptionStyle,
+  initialCaptionFont,
   initialEffect,
   initialBeauty,
   initialTransition,
@@ -89,6 +114,7 @@ export default function EditClient({
   initialSpeed: Speed;
   initialCaption: string;
   initialCaptionStyle: string;
+  initialCaptionFont: string;
   initialEffect: string;
   initialBeauty: string;
   initialTransition: string;
@@ -104,8 +130,14 @@ export default function EditClient({
   const [transition, setTransition] = useState(initialTransition);
   const [caption, setCaption] = useState(initialCaption);
   const [captionStyle, setCaptionStyle] = useState(initialCaptionStyle);
+  const [captionFont, setCaptionFont] = useState(initialCaptionFont);
   const [musicKey, setMusicKey] = useState<string | null>(initialMusicKey);
   const [tracks, setTracks] = useState<Track[]>([]);
+
+  // AI 風格建議(按鈕觸發;套用前的設定會留著供「復原」使用)
+  const [advising, setAdvising] = useState(false);
+  const [advice, setAdvice] = useState<Recommendation | null>(null);
+  const [undoState, setUndoState] = useState<Snapshot | null>(null);
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [progress, setProgress] = useState(0);
@@ -285,6 +317,58 @@ export default function EditClient({
     }
   }
 
+  // 讓 AI 看素材並提出整套風格建議(不自動套用)
+  async function askAI() {
+    if (!sourceKey || advising || busy) return;
+    setError(null);
+    setAdvising(true);
+    try {
+      const res = await fetch("/api/video/recommend", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId, key: sourceKey }),
+      });
+      const data = await readJson<Recommendation & { error?: string }>(res);
+      if (!res.ok) throw new Error(data.error ?? "AI 分析失敗,請再試一次。");
+      setAdvice(data);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "AI 分析失敗,請再試一次。");
+    } finally {
+      setAdvising(false);
+    }
+  }
+
+  function applyAdvice() {
+    if (!advice) return;
+    // 先存下目前設定,套用後可一鍵復原
+    setUndoState({
+      effect,
+      beauty,
+      captionStyle,
+      captionFont,
+      caption,
+      query,
+    });
+    setEffect(advice.filterPreset);
+    setBeauty(advice.beauty);
+    setCaptionStyle(advice.subtitleStyle);
+    setCaptionFont(advice.subtitleFont);
+    if (advice.caption) setCaption(advice.caption);
+    if (advice.musicMood) setQuery(advice.musicMood);
+    setAdvice(null);
+  }
+
+  function undoAdvice() {
+    if (!undoState) return;
+    setEffect(undoState.effect);
+    setBeauty(undoState.beauty);
+    setCaptionStyle(undoState.captionStyle);
+    setCaptionFont(undoState.captionFont);
+    setCaption(undoState.caption);
+    setQuery(undoState.query);
+    setUndoState(null);
+  }
+
   async function handleRender() {
     if (busy || !sourceKey) return;
     setError(null);
@@ -299,6 +383,7 @@ export default function EditClient({
           speed,
           caption,
           captionStyle,
+          captionFont,
           effect,
           beauty,
           transition,
@@ -448,6 +533,110 @@ export default function EditClient({
         )}
       </section>
 
+      {/* AI 風格建議 */}
+      {sourceKey && (
+        <section className="mt-4 rounded-3xl border border-brand/30 bg-brand/[0.07] p-5">
+          <h2 className="flex items-center gap-2 font-medium">
+            <Sparkles className="size-4 text-brand" />
+            AI 風格建議
+          </h2>
+
+          {advice ? (
+            <div className="mt-3">
+              <p className="text-sm leading-relaxed text-foreground/75">
+                {advice.reason}
+              </p>
+              <dl className="mt-3 space-y-1.5 rounded-2xl bg-background/50 px-4 py-3 text-sm">
+                {advice.templateName && (
+                  <Row label="風格" value={advice.templateName} />
+                )}
+                <Row
+                  label="色調"
+                  value={
+                    FILTER_PRESETS.find((f) => f.id === advice.filterPreset)
+                      ?.label ?? advice.filterPreset
+                  }
+                />
+                <Row
+                  label="磨皮"
+                  value={
+                    BEAUTY_LEVELS.find((b) => b.id === advice.beauty)?.label ??
+                    advice.beauty
+                  }
+                />
+                <Row
+                  label="字體"
+                  value={
+                    CAPTION_FONTS.find((f) => f.id === advice.subtitleFont)
+                      ?.label ?? advice.subtitleFont
+                  }
+                />
+                {advice.caption && (
+                  <Row label="文案" value={`「${advice.caption}」`} />
+                )}
+                {advice.musicMood && (
+                  <Row label="配樂" value={advice.musicMood} />
+                )}
+              </dl>
+              <div className="mt-4 flex gap-3">
+                <button
+                  type="button"
+                  onClick={applyAdvice}
+                  className="flex-1 rounded-xl bg-brand py-3 text-sm font-medium text-white transition hover:opacity-90"
+                >
+                  套用建議
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAdvice(null)}
+                  className="flex-1 rounded-xl border border-white/15 py-3 text-sm transition hover:bg-white/5"
+                >
+                  不用了
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <p className="mt-1.5 text-sm text-foreground/55">
+                讓 AI 看一下你的素材,推薦最適合的色調、磨皮、字體與文案 —
+                套用與否都由你決定。
+              </p>
+              <div className="mt-3 flex gap-3">
+                <button
+                  type="button"
+                  disabled={advising || busy}
+                  onClick={askAI}
+                  className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-brand py-3 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-40"
+                >
+                  {advising ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" />
+                      分析中…
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="size-4" />
+                      讓 AI 幫我挑風格
+                    </>
+                  )}
+                </button>
+                {undoState && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={undoAdvice}
+                    className="flex items-center justify-center gap-1.5 rounded-xl border border-white/15 px-4 py-3 text-sm transition hover:bg-white/5"
+                  >
+                    <RotateCcw className="size-4" />
+                    復原
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+        </section>
+      )}
+
       {/* 美顏磨皮 */}
       <section className="mt-4 rounded-3xl border border-white/10 bg-white/5 p-5">
         <h2 className="flex items-center gap-2 font-medium">
@@ -548,7 +737,28 @@ export default function EditClient({
           placeholder="輸入想放在影片上的文字(可留空)"
           className="mt-3 w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm outline-none transition placeholder:text-foreground/30 focus:border-brand"
         />
-        <div className="mt-3 flex flex-wrap gap-2">
+        {/* 字體 */}
+        <div className="mt-3 grid grid-cols-4 gap-2">
+          {CAPTION_FONTS.map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              disabled={busy}
+              onClick={() => setCaptionFont(opt.id)}
+              style={{ fontFamily: opt.cssStack }}
+              className={`rounded-xl border py-2.5 text-sm transition ${
+                captionFont === opt.id
+                  ? "border-brand bg-brand text-white"
+                  : "border-white/15 text-foreground/60 hover:border-brand/60"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
+        {/* 配色 */}
+        <div className="mt-2 flex flex-wrap gap-2">
           {CAPTION_STYLES.map((opt) => (
             <button
               key={opt.value}
@@ -571,13 +781,15 @@ export default function EditClient({
             style={{
               color: activeCaptionStyle.fill,
               textShadow: activeCaptionStyle.shadow,
+              fontFamily: CAPTION_FONTS.find((f) => f.id === captionFont)
+                ?.cssStack,
             }}
           >
             {caption.trim()}
           </p>
         )}
         <p className="mt-2 text-xs text-foreground/40">
-          圓潤可愛的粉圓體,自動斷行(最多三行),顯示在影片下方
+          自動斷行(最多三行),顯示在影片下方。預覽的字體外觀以成品為準。
         </p>
       </section>
 
@@ -780,5 +992,14 @@ export default function EditClient({
         }}
       />
     </main>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between gap-4">
+      <dt className="shrink-0 text-foreground/45">{label}</dt>
+      <dd className="min-w-0 text-right">{value}</dd>
+    </div>
   );
 }

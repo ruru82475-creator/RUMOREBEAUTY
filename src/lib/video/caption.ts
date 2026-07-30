@@ -9,6 +9,7 @@ import {
   rasterize,
   type RGBA,
 } from "./raster";
+import { CAPTION_STYLE_LABELS } from "./caption-styles";
 
 // 美術字幕 → 透明 PNG
 // 全程純 JavaScript(字型輪廓 → 掃描線填色 → PNG),不依賴 ffmpeg 的 drawtext,
@@ -22,26 +23,30 @@ const MAX_LINES = 3;
 
 export type CaptionStyle = { fill: RGBA; stroke: RGBA };
 
-export const CAPTION_STYLES: Record<string, CaptionStyle> = {
-  classic: { fill: [255, 255, 255, 255], stroke: [0, 0, 0, 200] }, // 白字黑邊
-  rose: { fill: [255, 233, 238, 255], stroke: [120, 40, 60, 215] }, // 玫瑰金
-  gold: { fill: [255, 243, 208, 255], stroke: [90, 60, 10, 215] }, // 香檳金
-  ink: { fill: [27, 18, 24, 255], stroke: [255, 255, 255, 225] }, // 黑字白邊
-};
+// 配色定義集中在 caption-styles.ts(前後端共用)
+export const CAPTION_STYLES: Record<string, CaptionStyle> = Object.fromEntries(
+  CAPTION_STYLE_LABELS.map((s) => [
+    s.id,
+    { fill: s.fill as RGBA, stroke: s.stroke as RGBA },
+  ])
+);
 
-let cachedFont: Font | null = null;
+// 依字型檔路徑快取(可選多種字體)
+const fontCache = new Map<string, Font>();
 
 async function loadFont(fontPath: string): Promise<Font> {
-  if (!cachedFont) {
-    const buffer = await fs.readFile(fontPath);
-    cachedFont = parseFont(
-      buffer.buffer.slice(
-        buffer.byteOffset,
-        buffer.byteOffset + buffer.byteLength
-      ) as ArrayBuffer
-    );
-  }
-  return cachedFont;
+  const cached = fontCache.get(fontPath);
+  if (cached) return cached;
+
+  const buffer = await fs.readFile(fontPath);
+  const font = parseFont(
+    buffer.buffer.slice(
+      buffer.byteOffset,
+      buffer.byteOffset + buffer.byteLength
+    ) as ArrayBuffer
+  );
+  fontCache.set(fontPath, font);
+  return font;
 }
 
 /** 濾掉字型沒有的字元(否則會畫成空白方框) */

@@ -9,6 +9,7 @@ type EditConfig = {
   speed?: number;
   caption?: string;
   caption_style?: string;
+  caption_font?: string;
   effect?: string;
   beauty?: string;
   transition?: string;
@@ -51,6 +52,7 @@ export default async function ShootPage({
       initialSpeed={speed}
       initialCaption={config.caption ?? ""}
       initialCaptionStyle={config.caption_style ?? "classic"}
+      initialCaptionFont={config.caption_font ?? "huninn"}
       initialEffect={config.effect ?? "none"}
       initialBeauty={config.beauty ?? "off"}
       initialTransition={config.transition ?? "fade"}

@@ -9,22 +9,28 @@ import { createClient } from "@/lib/supabase/server";
 import { presignGet, R2_BUCKET, r2Client } from "@/lib/r2";
 import { probeVideo, renderEdit } from "@/lib/video/ffmpeg";
 import { BEAUTY_LEVELS, FILTER_PRESETS } from "@/lib/video/presets";
+import { CAPTION_FONTS, fontById } from "@/lib/video/fonts";
 import { CAPTION_STYLES, renderCaptionPng } from "@/lib/video/caption";
 
 // 產生成品影片:縮時 + 直式構圖 + 風格濾鏡 + 轉場 + 美術字幕 + 背景音樂
 // 注意:Vercel Hobby 方案函式上限 60 秒,長素材請提高倍速
 export const maxDuration = 60;
 
-const FONT_PATH = path.join(process.cwd(), "src/assets/fonts/jf-openhuninn.ttf");
+const FONT_DIR = path.join(process.cwd(), "src/assets/fonts");
 
 const bodySchema = z.object({
   projectId: z.uuid(),
   sourceKey: z.string().min(3).max(500),
   speed: z.union([z.literal(1), z.literal(2), z.literal(4), z.literal(8)]),
   caption: z.string().max(60).optional().default(""),
-  captionStyle: z.enum(Object.keys(CAPTION_STYLES) as [string, ...string[]])
+  captionStyle: z
+    .enum(Object.keys(CAPTION_STYLES) as [string, ...string[]])
     .optional()
     .default("classic"),
+  captionFont: z
+    .enum(CAPTION_FONTS.map((f) => f.id) as [string, ...string[]])
+    .optional()
+    .default("huninn"),
   effect: z
     .enum(FILTER_PRESETS.map((p) => p.id) as [string, ...string[]])
     .optional()
@@ -49,6 +55,7 @@ export async function POST(request: Request) {
     speed,
     caption,
     captionStyle,
+    captionFont,
     effect,
     beauty,
     transition,
@@ -101,6 +108,7 @@ export async function POST(request: Request) {
         speed,
         caption,
         caption_style: captionStyle,
+        caption_font: captionFont,
         effect,
         beauty,
         transition,
@@ -123,7 +131,7 @@ export async function POST(request: Request) {
     if (caption.trim()) {
       const { buffer } = await renderCaptionPng({
         text: caption,
-        fontPath: FONT_PATH,
+        fontPath: path.join(FONT_DIR, fontById(captionFont).file),
         style: captionStyle,
       });
       captionPngPath = path.join(
