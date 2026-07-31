@@ -87,7 +87,12 @@ ${list(subtitleStyles)}
 字幕文案要求:繁體中文(台灣用語)、12 個字以內、像美容師本人在社群發文的口吻,
 可用「✦」「·」等簡單符號,不要用 hashtag,不要誇大療效。
 
-音樂氛圍請用英文關鍵字(2~4 個字),之後會拿去搜尋免費音樂庫,例如:soft piano、cute upbeat。
+musicMood 只能填下列其中一個(系統會自動從音樂庫挑一首該氛圍的配樂):
+  chill(輕柔:施作過程、日常紀錄)
+  upbeat(活潑:美甲彩繪、成品展示)
+  elegant(典雅:水晶音樂與鋼琴,紋繡、護膚、質感作品)
+  energetic(動感:縮時、快速剪輯)
+  cinematic(電影感:品牌形象、前後對比)
 
 只回傳 JSON,不要有其他文字或 markdown 符號:
 {"templateId":"","filterPreset":"","beauty":"","subtitleStyle":"","subtitleFont":"","caption":"","musicMood":"","reason":""}
@@ -137,10 +142,17 @@ reason 用一句繁體中文說明為什麼這樣搭配。`;
         typeof parsed.caption === "string"
           ? parsed.caption.trim().slice(0, 40)
           : "",
-      musicMood:
-        typeof parsed.musicMood === "string"
-          ? parsed.musicMood.trim().slice(0, 40)
-          : "soft background",
+      musicMood: [
+        "chill",
+        "upbeat",
+        "elegant",
+        "energetic",
+        "cinematic",
+      ].includes(
+        typeof parsed.musicMood === "string" ? parsed.musicMood.trim() : ""
+      )
+        ? (parsed.musicMood as string).trim()
+        : "chill",
       reason:
         typeof parsed.reason === "string"
           ? parsed.reason.trim().slice(0, 120)

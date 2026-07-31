@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Camera,
@@ -9,7 +10,7 @@ import {
   Loader2,
   Music,
   RotateCcw,
-  Search,
+  Shuffle,
   Sparkles,
   Type,
   Wand2,
@@ -17,6 +18,19 @@ import {
 import { BEAUTY_LEVELS, FILTER_PRESETS } from "@/lib/video/presets";
 import { CAPTION_FONTS } from "@/lib/video/fonts";
 import { CAPTION_STYLE_LABELS } from "@/lib/video/caption-styles";
+import {
+  MUSIC_MOODS,
+  formatDuration,
+  moodById,
+  pickRandomTrack,
+  type MusicTrack,
+} from "@/lib/resources/music";
+
+/** /api/media/music/xxx.mp3 → music/xxx.mp3 */
+function keyFromUrl(fileUrl: string): string {
+  const marker = "/api/media/";
+  return fileUrl.startsWith(marker) ? fileUrl.slice(marker.length) : fileUrl;
+}
 
 type Phase = "idle" | "uploading" | "rendering";
 type Speed = 1 | 2 | 4 | 8;
@@ -63,8 +77,6 @@ const CAPTION_STYLES = CAPTION_STYLE_LABELS.map((s) => ({
   shadow: s.cssShadow,
 }));
 
-type Track = { key: string; label: string };
-
 type Recommendation = {
   templateName: string | null;
   filterPreset: string;
@@ -85,14 +97,6 @@ type Snapshot = {
   caption: string;
   query: string;
 };
-type FreeTrack = {
-  id: string;
-  title: string;
-  creator: string;
-  license: string;
-  durationSec: number | null;
-  url: string;
-};
 
 export default function EditClient({
   projectId,
@@ -106,6 +110,7 @@ export default function EditClient({
   initialBeauty,
   initialTransition,
   initialMusicHint,
+  initialMood,
   initialMusicKey,
 }: {
   projectId: string;
@@ -119,6 +124,7 @@ export default function EditClient({
   initialBeauty: string;
   initialTransition: string;
   initialMusicHint: string;
+  initialMood: string;
   initialMusicKey: string | null;
 }) {
   const router = useRouter();
@@ -132,7 +138,11 @@ export default function EditClient({
   const [captionStyle, setCaptionStyle] = useState(initialCaptionStyle);
   const [captionFont, setCaptionFont] = useState(initialCaptionFont);
   const [musicKey, setMusicKey] = useState<string | null>(initialMusicKey);
-  const [tracks, setTracks] = useState<Track[]>([]);
+
+  // 依模板氛圍自動配樂(可換一首,也可展開清單自己挑)
+  const [mood, setMood] = useState(initialMood);
+  const [library, setLibrary] = useState<MusicTrack[]>([]);
+  const [showAllTracks, setShowAllTracks] = useState(false);
 
   // AI 風格建議(按鈕觸發;套用前的設定會留著供「復原」使用)
   const [advising, setAdvising] = useState(false);
@@ -146,13 +156,9 @@ export default function EditClient({
 
   // 免費音樂搜尋(模板會建議關鍵字)
   const [query, setQuery] = useState(initialMusicHint);
-  const [searching, setSearching] = useState(false);
-  const [results, setResults] = useState<FreeTrack[]>([]);
-  const [importingId, setImportingId] = useState<string | null>(null);
 
   const cameraRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
-  const musicRef = useRef<HTMLInputElement>(null);
 
   const busy = phase !== "idle";
   const estimatedSec =
@@ -160,13 +166,29 @@ export default function EditClient({
   // 磨皮運算較重,開啟時成品長度的安全上限要更嚴格
   const lengthLimit = beauty === "off" ? 45 : beauty === "strong" ? 20 : 30;
   const tooLong = estimatedSec != null && estimatedSec > lengthLimit;
+  // 目前選用的配樂(來自音樂庫時可顯示曲名與換一首)
+  const currentTrack =
+    library.find((t) => keyFromUrl(t.file_url) === musicKey) ?? null;
 
+  // 載入音樂庫;若尚未指定配樂,依模板氛圍隨機挑一首
   useEffect(() => {
-    fetch("/api/music")
+    let cancelled = false;
+    fetch("/api/music/library")
       .then((r) => (r.ok ? r.json() : { tracks: [] }))
-      .then((d: { tracks?: Track[] }) => setTracks(d.tracks ?? []))
+      .then((d: { tracks?: MusicTrack[] }) => {
+        if (cancelled) return;
+        const list = d.tracks ?? [];
+        setLibrary(list);
+        if (!initialMusicKey && list.length > 0) {
+          const pick = pickRandomTrack(list, initialMood);
+          if (pick) setMusicKey(keyFromUrl(pick.file_url));
+        }
+      })
       .catch(() => {});
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [initialMood, initialMusicKey]);
 
   async function uploadToR2(
     file: File,
@@ -244,79 +266,6 @@ export default function EditClient({
     }
   }
 
-  async function handleMusicFile(file: File) {
-    if (busy) return;
-    setError(null);
-    const okTypes = ["audio/mpeg", "audio/mp4", "audio/x-m4a", "audio/wav"];
-    if (!okTypes.includes(file.type)) {
-      setError("音樂格式不支援(限 MP3、M4A、WAV)。");
-      return;
-    }
-    try {
-      setUploadKind("music");
-      setPhase("uploading");
-      setProgress(0);
-      const key = await uploadToR2(file, {
-        purpose: "music",
-        contentType: file.type,
-        size: file.size,
-        name: file.name,
-      });
-      const label = file.name.replace(/\.[^.]+$/, "");
-      setTracks((prev) => [{ key, label }, ...prev.filter((t) => t.key !== key)]);
-      setMusicKey(key);
-      setPhase("idle");
-    } catch (e) {
-      setPhase("idle");
-      setError(e instanceof Error ? e.message : "音樂上傳失敗,請再試一次。");
-    }
-  }
-
-  async function searchMusic() {
-    setSearching(true);
-    setError(null);
-    try {
-      const res = await fetch(
-        `/api/music/search?q=${encodeURIComponent(query || "relaxing beauty")}`
-      );
-      const data = await readJson<{ tracks?: FreeTrack[]; error?: string }>(res);
-      if (!res.ok) throw new Error(data.error ?? "搜尋失敗");
-      setResults(data.tracks ?? []);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "音樂搜尋失敗");
-    } finally {
-      setSearching(false);
-    }
-  }
-
-  async function importTrack(track: FreeTrack) {
-    setImportingId(track.id);
-    setError(null);
-    try {
-      const res = await fetch("/api/music/import", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ url: track.url, title: track.title }),
-      });
-      const data = await readJson<{
-        key?: string;
-        label?: string;
-        error?: string;
-      }>(res);
-      if (!res.ok || !data.key) throw new Error(data.error ?? "加入失敗");
-      setTracks((prev) => [
-        { key: data.key!, label: data.label ?? track.title },
-        ...prev.filter((t) => t.key !== data.key),
-      ]);
-      setMusicKey(data.key);
-      setResults([]);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "加入音樂庫失敗");
-    } finally {
-      setImportingId(null);
-    }
-  }
-
   // 讓 AI 看素材並提出整套風格建議(不自動套用)
   async function askAI() {
     if (!sourceKey || advising || busy) return;
@@ -354,7 +303,12 @@ export default function EditClient({
     setCaptionStyle(advice.subtitleStyle);
     setCaptionFont(advice.subtitleFont);
     if (advice.caption) setCaption(advice.caption);
-    if (advice.musicMood) setQuery(advice.musicMood);
+    // AI 指定的氛圍 → 自動從音樂庫配一首
+    if (advice.musicMood) {
+      setMood(advice.musicMood);
+      const pick = pickRandomTrack(library, advice.musicMood);
+      if (pick) setMusicKey(keyFromUrl(pick.file_url));
+    }
     setAdvice(null);
   }
 
@@ -575,7 +529,7 @@ export default function EditClient({
                   <Row label="文案" value={`「${advice.caption}」`} />
                 )}
                 {advice.musicMood && (
-                  <Row label="配樂" value={advice.musicMood} />
+                  <Row label="配樂" value={moodById(advice.musicMood).label} />
                 )}
               </dl>
               <div className="mt-4 flex gap-3">
@@ -800,141 +754,163 @@ export default function EditClient({
           背景音樂
         </h2>
 
-        {/* 音樂庫 */}
-        <div className="mt-3 space-y-2">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => setMusicKey(null)}
-            className={`flex w-full items-center gap-3 rounded-xl border px-4 py-3 text-sm transition ${
-              musicKey === null
-                ? "border-brand bg-brand/10"
-                : "border-white/15 hover:border-brand/50"
-            }`}
-          >
-            <span
-              className={`size-4 shrink-0 rounded-full border-2 ${
-                musicKey === null ? "border-brand bg-brand" : "border-white/30"
-              }`}
-            />
-            不加音樂
-          </button>
-
-          {tracks.map((track) => (
-            <div
-              key={track.key}
-              className={`flex items-center gap-3 rounded-xl border px-4 py-3 transition ${
-                musicKey === track.key
-                  ? "border-brand bg-brand/10"
-                  : "border-white/15"
+        {/* 氛圍選擇 */}
+        <div className="mt-3 grid grid-cols-5 gap-2">
+          {MUSIC_MOODS.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setMood(m.id);
+                const pick = pickRandomTrack(library, m.id);
+                setMusicKey(pick ? keyFromUrl(pick.file_url) : null);
+              }}
+              className={`rounded-xl border py-2 text-xs transition ${
+                mood === m.id
+                  ? "border-brand bg-brand text-white"
+                  : "border-white/15 text-foreground/60 hover:border-brand/60"
               }`}
             >
+              {m.label}
+            </button>
+          ))}
+        </div>
+        <p className="mt-2 text-xs text-foreground/45">
+          {moodById(mood).description}
+        </p>
+
+        {/* 目前配樂 */}
+        {currentTrack ? (
+          <div className="mt-4 rounded-2xl border border-brand/30 bg-brand/10 p-4">
+            <p className="text-xs text-brand">目前配樂</p>
+            <p className="mt-1 truncate font-medium">{currentTrack.title}</p>
+            <p className="text-xs text-foreground/45">
+              {formatDuration(currentTrack.duration_sec)}・
+              {moodById(currentTrack.mood).label}
+            </p>
+            <div className="mt-3 flex items-center gap-2">
+              <audio
+                src={currentTrack.file_url}
+                controls
+                preload="none"
+                className="h-9 min-w-0 flex-1"
+              />
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => setMusicKey(track.key)}
-                className="flex min-w-0 flex-1 items-center gap-3 text-left text-sm"
+                onClick={() => {
+                  const pick = pickRandomTrack(library, mood, currentTrack.id);
+                  if (pick) setMusicKey(keyFromUrl(pick.file_url));
+                }}
+                className="flex shrink-0 items-center gap-1.5 rounded-lg border border-brand px-3 py-2 text-xs text-brand transition hover:bg-brand hover:text-white"
               >
-                <span
-                  className={`size-4 shrink-0 rounded-full border-2 ${
-                    musicKey === track.key
-                      ? "border-brand bg-brand"
-                      : "border-white/30"
-                  }`}
-                />
-                <span className="truncate">{track.label}</span>
+                <Shuffle className="size-3.5" />
+                換一首
               </button>
-              <audio
-                src={`/api/media/${track.key}`}
-                controls
-                preload="none"
-                className="h-8 w-28 shrink-0"
-              />
             </div>
-          ))}
-        </div>
-
-        {/* 免費音樂搜尋(Openverse:CC0 / 公眾領域 / CC-BY) */}
-        <div className="mt-4 rounded-2xl border border-white/10 bg-background/40 p-4">
-          <p className="text-sm text-foreground/70">搜尋免費授權音樂</p>
-          <div className="mt-2 flex gap-2">
-            <input
-              type="text"
-              value={query}
-              disabled={busy || searching}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  searchMusic();
-                }
-              }}
-              placeholder="例:relaxing piano、upbeat"
-              className="min-w-0 flex-1 rounded-xl border border-white/15 bg-white/5 px-3.5 py-2.5 text-sm outline-none placeholder:text-foreground/30 focus:border-brand"
+          </div>
+        ) : musicKey ? (
+          <div className="mt-4 flex items-center gap-2 rounded-2xl border border-white/15 bg-white/5 p-4">
+            <audio
+              src={`/api/media/${musicKey}`}
+              controls
+              preload="none"
+              className="h-9 min-w-0 flex-1"
             />
             <button
               type="button"
-              disabled={busy || searching}
-              onClick={searchMusic}
-              className="flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2.5 text-sm text-white transition hover:opacity-90 disabled:opacity-40"
+              disabled={busy}
+              onClick={() => setMusicKey(null)}
+              className="shrink-0 text-xs text-red-300 underline-offset-4 hover:underline"
             >
-              {searching ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <Search className="size-4" />
-              )}
-              搜尋
+              移除
             </button>
           </div>
+        ) : (
+          <p className="mt-4 rounded-2xl border border-white/10 bg-background/40 px-4 py-4 text-sm text-foreground/55">
+            {library.length === 0
+              ? "音樂庫還是空的 — 到「背景音樂庫」加入配樂後,這裡就會自動幫你配好。"
+              : "目前不加音樂(適合之後到 IG／TikTok 用平台官方音樂)。"}
+          </p>
+        )}
 
-          {results.length > 0 && (
-            <ul className="mt-3 space-y-2">
-              {results.map((track) => (
-                <li
-                  key={track.id}
-                  className="rounded-xl border border-white/10 bg-white/5 p-3"
-                >
-                  <p className="truncate text-sm">{track.title}</p>
-                  <p className="mt-0.5 truncate text-xs text-foreground/45">
-                    {track.creator}・{track.license}
-                    {track.durationSec ? `・${track.durationSec} 秒` : ""}
-                  </p>
-                  <div className="mt-2 flex items-center gap-2">
-                    <audio
-                      src={track.url}
-                      controls
-                      preload="none"
-                      className="h-8 min-w-0 flex-1"
-                    />
-                    <button
-                      type="button"
-                      disabled={importingId !== null}
-                      onClick={() => importTrack(track)}
-                      className="shrink-0 rounded-lg border border-brand px-3 py-1.5 text-xs text-brand transition hover:bg-brand hover:text-white disabled:opacity-40"
-                    >
-                      {importingId === track.id ? "加入中…" : "加入音樂庫"}
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
+        {/* 自己挑 / 不加音樂 */}
+        <div className="mt-3 flex flex-wrap items-center gap-4 text-sm">
+          {library.length > 0 && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setShowAllTracks((v) => !v)}
+              className="text-brand underline-offset-4 hover:underline"
+            >
+              {showAllTracks ? "收起清單" : "自己挑一首"}
+            </button>
           )}
+          {musicKey && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setMusicKey(null)}
+              className="text-foreground/50 underline-offset-4 hover:text-foreground hover:underline"
+            >
+              不加音樂
+            </button>
+          )}
+          <Link
+            href="/studio/resources/music"
+            className="ml-auto flex items-center gap-1 text-foreground/50 underline-offset-4 hover:text-brand hover:underline"
+          >
+            <Music className="size-3.5" />
+            管理音樂庫
+          </Link>
         </div>
 
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => musicRef.current?.click()}
-          className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-white/20 py-3 text-sm transition hover:border-brand/60 hover:bg-white/5 disabled:opacity-40"
-        >
-          <Music className="size-4" />
-          或上傳自己的音樂
-        </button>
-        <p className="mt-2 text-xs text-foreground/40">
-          音樂會取代原始聲音並在結尾淡出。搜尋結果來自 Openverse
-          開放授權素材庫,加入音樂庫後每個專案都能重複選用。
+        {showAllTracks && library.length > 0 && (
+          <div className="mt-3 max-h-72 space-y-2 overflow-y-auto rounded-2xl border border-white/10 bg-background/40 p-3">
+            {library.map((track) => {
+              const key = keyFromUrl(track.file_url);
+              return (
+                <button
+                  key={track.id}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    setMusicKey(key);
+                    setShowAllTracks(false);
+                  }}
+                  className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-sm transition ${
+                    musicKey === key
+                      ? "border-brand bg-brand/10"
+                      : "border-white/10 hover:border-brand/50"
+                  }`}
+                >
+                  <span
+                    className={`size-3.5 shrink-0 rounded-full border-2 ${
+                      musicKey === key
+                        ? "border-brand bg-brand"
+                        : "border-white/30"
+                    }`}
+                  />
+                  <span className="min-w-0 flex-1 truncate">{track.title}</span>
+                  <span className="shrink-0 text-xs tabular-nums text-foreground/40">
+                    {formatDuration(track.duration_sec)}
+                  </span>
+                  <span className="shrink-0 rounded-full border border-white/10 px-2 py-0.5 text-[11px] text-foreground/50">
+                    {moodById(track.mood).label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        <p className="mt-3 text-xs leading-relaxed text-foreground/40">
+          音樂會取代原始聲音並在結尾淡出。想用真正的流行歌,請選「不加音樂」,
+          到 IG／TikTok 發布時使用平台內建的官方音樂庫(那才是有授權的做法)。
         </p>
       </section>
+
 
       {error && (
         <p className="mt-4 rounded-xl border border-red-400/30 bg-red-400/10 px-4 py-3.5 text-sm text-red-200">
@@ -977,17 +953,6 @@ export default function EditClient({
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (file) handleVideoFile(file);
-          e.target.value = "";
-        }}
-      />
-      <input
-        ref={musicRef}
-        type="file"
-        accept="audio/*"
-        className="hidden"
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) handleMusicFile(file);
           e.target.value = "";
         }}
       />

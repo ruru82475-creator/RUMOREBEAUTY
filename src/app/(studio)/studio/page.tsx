@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Clapperboard, Images, Send, Users } from "lucide-react";
+import { Clapperboard, Images, Music, Send, Users } from "lucide-react";
 
 export const metadata = { title: "後台總覽 | GlowStudio" };
 
@@ -9,6 +9,12 @@ const sections = [
     title: "作品集管理",
     description: "上傳與整理美容、3D 列印作品",
     href: "/studio/works",
+  },
+  {
+    icon: Music,
+    title: "背景音樂庫",
+    description: "依氛圍分類管理配樂,做影片時自動套用",
+    href: "/studio/resources/music",
   },
   {
     icon: Users,

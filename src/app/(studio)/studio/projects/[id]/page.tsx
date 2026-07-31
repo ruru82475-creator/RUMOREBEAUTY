@@ -82,6 +82,36 @@ export default async function ProjectPage({
               下載影片
             </a>
           </div>
+
+          {/* 發布建議 */}
+          <div className="mt-5 space-y-2 border-t border-emerald-400/20 pt-4 text-sm leading-relaxed text-foreground/70">
+            <p className="font-medium text-foreground/85">這支影片怎麼用?</p>
+            {config.music_key ? (
+              <>
+                <p>
+                  ✓ <strong>官網作品集、LINE 傳給客人、廣告投放</strong> —
+                  直接用,配樂授權可商用免標註。
+                </p>
+                <p>
+                  ✓ <strong>IG / TikTok</strong> — 也能直接發;若想用平台上的
+                  熱門流行歌,回編輯頁選「不加音樂」重新產生一版,
+                  發布時在 App 內選官方音樂。
+                </p>
+              </>
+            ) : (
+              <>
+                <p>
+                  ✓ <strong>IG / TikTok / Threads</strong> —
+                  這版沒有配樂,發布時在 App 內挑平台的官方音樂,
+                  演算法通常也吃這一套。
+                </p>
+                <p>
+                  ✓ <strong>官網或 LINE</strong> —
+                  若希望有配樂,回編輯頁挑一首再產生一次即可。
+                </p>
+              </>
+            )}
+          </div>
         </div>
       )}
 

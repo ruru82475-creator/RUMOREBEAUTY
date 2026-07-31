@@ -14,6 +14,7 @@ type EditConfig = {
   beauty?: string;
   transition?: string;
   music_hint?: string;
+  mood?: string;
   music_key?: string | null;
 };
 
@@ -57,6 +58,7 @@ export default async function ShootPage({
       initialBeauty={config.beauty ?? "off"}
       initialTransition={config.transition ?? "fade"}
       initialMusicHint={config.music_hint ?? ""}
+      initialMood={config.mood ?? "chill"}
       initialMusicKey={config.music_key ?? null}
     />
   );
