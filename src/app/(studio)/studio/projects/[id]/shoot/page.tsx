@@ -8,9 +8,15 @@ type EditConfig = {
   source_key?: string;
   speed?: number;
   caption?: string;
+  /** 12 組字幕風格 */
+  subtitle_style?: string;
+  /** 微調區的配色/字體覆蓋(null 表示沿用風格自帶的) */
+  caption_color?: string | null;
+  caption_font?: string | null;
+  /** 舊資料留下的欄位:當時的 caption_style 存的是配色 id */
   caption_style?: string;
-  caption_font?: string;
   effect?: string;
+  decoration?: string;
   beauty?: string;
   transition?: string;
   music_hint?: string;
@@ -52,12 +58,13 @@ export default async function ShootPage({
       initialSourceKey={config.source_key ?? null}
       initialSpeed={speed}
       initialCaption={config.caption ?? ""}
-      initialCaptionStyle={config.caption_style ?? "classic"}
-      initialCaptionFont={config.caption_font ?? "huninn"}
+      initialSubtitleStyle={config.subtitle_style ?? "classic-white"}
+      initialCaptionColor={config.caption_color ?? config.caption_style ?? null}
+      initialCaptionFont={config.caption_font ?? null}
       initialEffect={config.effect ?? "none"}
+      initialDecoration={config.decoration ?? "none"}
       initialBeauty={config.beauty ?? "off"}
       initialTransition={config.transition ?? "fade"}
-      initialMusicHint={config.music_hint ?? ""}
       initialMood={config.mood ?? "chill"}
       initialMusicKey={config.music_key ?? null}
     />

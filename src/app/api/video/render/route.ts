@@ -8,33 +8,53 @@ import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { createClient } from "@/lib/supabase/server";
 import { presignGet, R2_BUCKET, r2Client } from "@/lib/r2";
 import { probeVideo, renderEdit } from "@/lib/video/ffmpeg";
-import { BEAUTY_LEVELS, FILTER_PRESETS } from "@/lib/video/presets";
+import { BEAUTY_LEVELS } from "@/lib/video/presets";
 import { CAPTION_FONTS, fontById } from "@/lib/video/fonts";
 import { CAPTION_STYLES, renderCaptionPng } from "@/lib/video/caption";
+import { VISUAL_FILTERS } from "@/lib/resources/filters";
+import { DECORATIONS } from "@/lib/resources/decorations";
+import {
+  SUBTITLE_STYLES,
+  subtitleStyleById,
+} from "@/lib/resources/subtitleStyles";
 
-// 產生成品影片:縮時 + 直式構圖 + 風格濾鏡 + 轉場 + 美術字幕 + 背景音樂
+// 產生成品影片:縮時 + 直式構圖 + 風格濾鏡 + 裝飾 + 轉場 + 美術字幕 + 背景音樂
 // 注意:Vercel Hobby 方案函式上限 60 秒,長素材請提高倍速
 export const maxDuration = 60;
 
 const FONT_DIR = path.join(process.cwd(), "src/assets/fonts");
+
+// 舊代號(例如模板存的 mono)也要收,filterById 會自動對到新的那一組
+const FILTER_IDS = [
+  ...VISUAL_FILTERS.map((f) => f.id),
+  ...VISUAL_FILTERS.flatMap((f) => f.aliases ?? []),
+] as [string, ...string[]];
+
+const DECORATION_IDS = DECORATIONS.filter((d) => d.available).map(
+  (d) => d.id
+) as [string, ...string[]];
+
+const SUBTITLE_IDS = SUBTITLE_STYLES.filter((s) => s.available).map(
+  (s) => s.id
+) as [string, ...string[]];
 
 const bodySchema = z.object({
   projectId: z.uuid(),
   sourceKey: z.string().min(3).max(500),
   speed: z.union([z.literal(1), z.literal(2), z.literal(4), z.literal(8)]),
   caption: z.string().max(60).optional().default(""),
-  captionStyle: z
+  /** 12 組字幕風格的其中一組 */
+  subtitleStyle: z.enum(SUBTITLE_IDS).optional().default("classic-white"),
+  /** 微調區的配色覆蓋,沒給就用風格自己的配色 */
+  captionColor: z
     .enum(Object.keys(CAPTION_STYLES) as [string, ...string[]])
-    .optional()
-    .default("classic"),
+    .optional(),
+  /** 微調區的字體覆蓋,沒給就用風格自己的字體 */
   captionFont: z
     .enum(CAPTION_FONTS.map((f) => f.id) as [string, ...string[]])
-    .optional()
-    .default("huninn"),
-  effect: z
-    .enum(FILTER_PRESETS.map((p) => p.id) as [string, ...string[]])
-    .optional()
-    .default("none"),
+    .optional(),
+  effect: z.enum(FILTER_IDS).optional().default("none"),
+  decoration: z.enum(DECORATION_IDS).optional().default("none"),
   beauty: z
     .enum(BEAUTY_LEVELS.map((b) => b.id) as [string, ...string[]])
     .optional()
@@ -54,9 +74,11 @@ export async function POST(request: Request) {
     sourceKey,
     speed,
     caption,
-    captionStyle,
+    subtitleStyle,
+    captionColor,
     captionFont,
     effect,
+    decoration,
     beauty,
     transition,
     musicKey,
@@ -107,9 +129,11 @@ export async function POST(request: Request) {
         source_key: sourceKey,
         speed,
         caption,
-        caption_style: captionStyle,
-        caption_font: captionFont,
+        subtitle_style: subtitleStyle,
+        caption_color: captionColor ?? null,
+        caption_font: captionFont ?? null,
         effect,
+        decoration,
         beauty,
         transition,
         music_key: musicKey ?? null,
@@ -128,12 +152,21 @@ export async function POST(request: Request) {
     }
 
     // 美術字幕:先畫成透明 PNG,再由 ffmpeg 疊上(不依賴 drawtext)
+    // 字體以微調區的選擇優先,沒選就用字幕風格自己配好的那一款
+    const style = subtitleStyleById(subtitleStyle);
+    let captionAnimation = style.animation;
+
     if (caption.trim()) {
-      const { buffer } = await renderCaptionPng({
+      const { buffer, animation } = await renderCaptionPng({
         text: caption,
-        fontPath: path.join(FONT_DIR, fontById(captionFont).file),
-        style: captionStyle,
+        fontPath: path.join(
+          FONT_DIR,
+          fontById(captionFont ?? style.fontId).file
+        ),
+        styleId: subtitleStyle,
+        colorId: captionColor ?? null,
       });
+      captionAnimation = animation;
       captionPngPath = path.join(
         os.tmpdir(),
         `gs-caption-${crypto.randomUUID()}.png`
@@ -147,9 +180,11 @@ export async function POST(request: Request) {
       sourceDurationSec: info.durationSec,
       speed,
       effect,
+      decoration,
       beauty,
       transition,
       captionPngPath,
+      captionAnimation,
       musicUrl,
     });
 

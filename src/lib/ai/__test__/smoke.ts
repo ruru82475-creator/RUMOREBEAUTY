@@ -62,17 +62,17 @@ async function main() {
       { id: "t-mono", name: "黑白質感", description: "純黑白強調線條" },
     ],
     filters: [
-      { id: "cream", name: "奶油肌", description: "溫潤柔和" },
-      { id: "peach", name: "蜜桃粉", description: "粉嫩甜美" },
-      { id: "mono", name: "黑白質感", description: "純黑白" },
+      { id: "cream", name: "奶茶色", description: "溫潤柔和" },
+      { id: "peach", name: "粉嫩", description: "粉嫩甜美" },
+      { id: "noir", name: "黑金", description: "近黑白的高反差" },
     ],
-    fonts: [
-      { id: "huninn", name: "粉圓體", description: "" },
-      { id: "serif", name: "優雅明體", description: "" },
+    decorations: [
+      { id: "none", name: "不加裝飾", description: "保持畫面乾淨" },
+      { id: "frame-elegant", name: "優雅邊框", description: "金色雙線圓角框" },
     ],
     subtitleStyles: [
-      { id: "classic", name: "白字黑邊", description: "" },
-      { id: "rose", name: "玫瑰金", description: "" },
+      { id: "classic-white", name: "經典白條", description: "白字加黑底條" },
+      { id: "elegant-serif", name: "優雅金明體", description: "香檳金明體" },
     ],
   });
   console.log("--- AI 風格建議 ---");

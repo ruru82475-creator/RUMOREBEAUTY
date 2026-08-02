@@ -2,6 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Wand2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
+import { filterById } from "@/lib/resources/filters";
+import { decorationById } from "@/lib/resources/decorations";
+import { subtitleStyleById } from "@/lib/resources/subtitleStyles";
 
 export const metadata = { title: "影片專案 | GlowStudio" };
 
@@ -18,6 +21,9 @@ type EditConfig = {
   source_key?: string;
   speed?: number;
   caption?: string;
+  effect?: string;
+  decoration?: string;
+  subtitle_style?: string;
   music_key?: string | null;
 };
 
@@ -135,8 +141,20 @@ export default async function ProjectPage({
             <dd>{config.speed && config.speed > 1 ? `${config.speed} 倍` : "原速"}</dd>
           </div>
           <div className="flex justify-between gap-4">
+            <dt className="text-foreground/50">畫面色調</dt>
+            <dd>{filterById(config.effect).label}</dd>
+          </div>
+          <div className="flex justify-between gap-4">
+            <dt className="text-foreground/50">畫面裝飾</dt>
+            <dd>{decorationById(config.decoration).label}</dd>
+          </div>
+          <div className="flex justify-between gap-4">
             <dt className="text-foreground/50">美術字幕</dt>
-            <dd className="min-w-0 truncate">{config.caption?.trim() || "未設定"}</dd>
+            <dd className="min-w-0 truncate">
+              {config.caption?.trim()
+                ? `${config.caption.trim()}(${subtitleStyleById(config.subtitle_style).label})`
+                : "未設定"}
+            </dd>
           </div>
           <div className="flex justify-between gap-4">
             <dt className="text-foreground/50">背景音樂</dt>

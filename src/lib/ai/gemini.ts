@@ -52,13 +52,13 @@ export class GeminiProvider implements AIProvider {
     images,
     templates,
     filters,
-    fonts,
+    decorations,
     subtitleStyles,
   }: {
     images: { base64: string; mimeType: string }[];
     templates: RecommendCandidate[];
     filters: RecommendCandidate[];
-    fonts: RecommendCandidate[];
+    decorations: RecommendCandidate[];
     subtitleStyles: RecommendCandidate[];
   }): Promise<StyleRecommendation> {
     const list = (items: RecommendCandidate[]) =>
@@ -75,10 +75,10 @@ ${list(templates)}
 可選的畫面色調:
 ${list(filters)}
 
-可選的字幕字體:
-${list(fonts)}
+可選的畫面裝飾(不確定就填 none,寧可乾淨也不要亂加):
+${list(decorations)}
 
-可選的字幕配色:
+可選的字幕風格(字體與配色都已配好在風格裡,不必另外挑):
 ${list(subtitleStyles)}
 
 磨皮強度只能填:off(關閉)、natural(自然)、standard(標準)、strong(強)
@@ -95,7 +95,7 @@ musicMood 只能填下列其中一個(系統會自動從音樂庫挑一首該氛
   cinematic(電影感:品牌形象、前後對比)
 
 只回傳 JSON,不要有其他文字或 markdown 符號:
-{"templateId":"","filterPreset":"","beauty":"","subtitleStyle":"","subtitleFont":"","caption":"","musicMood":"","reason":""}
+{"templateId":"","filterPreset":"","decoration":"","beauty":"","subtitleStyle":"","caption":"","musicMood":"","reason":""}
 
 reason 用一句繁體中文說明為什麼這樣搭配。`;
 
@@ -133,11 +133,11 @@ reason 用一句繁體中文說明為什麼這樣搭配。`;
       templateName:
         templates.find((t) => t.id === templateId)?.name ?? null,
       filterPreset: pick(parsed.filterPreset, filters, "none"),
+      decoration: pick(parsed.decoration, decorations, "none"),
       beauty: ["off", "natural", "standard", "strong"].includes(beautyRaw)
         ? beautyRaw
         : "natural",
-      subtitleStyle: pick(parsed.subtitleStyle, subtitleStyles, "classic"),
-      subtitleFont: pick(parsed.subtitleFont, fonts, "huninn"),
+      subtitleStyle: pick(parsed.subtitleStyle, subtitleStyles, "classic-white"),
       caption:
         typeof parsed.caption === "string"
           ? parsed.caption.trim().slice(0, 40)

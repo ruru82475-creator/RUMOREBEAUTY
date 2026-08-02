@@ -1,23 +1,48 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Camera,
   FastForward,
+  Frame,
   ImageIcon,
   Loader2,
   Music,
   RotateCcw,
   Shuffle,
+  SlidersHorizontal,
   Sparkles,
   Type,
   Wand2,
 } from "lucide-react";
-import { BEAUTY_LEVELS, FILTER_PRESETS } from "@/lib/video/presets";
-import { CAPTION_FONTS } from "@/lib/video/fonts";
+import { BEAUTY_LEVELS } from "@/lib/video/presets";
+import { CAPTION_FONTS, fontById } from "@/lib/video/fonts";
 import { CAPTION_STYLE_LABELS } from "@/lib/video/caption-styles";
+import {
+  FILTER_CATEGORIES,
+  VISUAL_FILTERS,
+  filterById,
+  filtersByCategory,
+  filtersByMood,
+} from "@/lib/resources/filters";
+import {
+  DECORATION_CATEGORIES,
+  DECORATIONS,
+  decorationById,
+  decorationsByCategory,
+  decorationsByMood,
+  type DecorationSpec,
+} from "@/lib/resources/decorations";
+import {
+  SUBTITLE_CATEGORIES,
+  SUBTITLE_STYLES,
+  subtitleStyleById,
+  subtitleStylesByCategory,
+  subtitleStylesByMood,
+  type SubtitleStyle,
+} from "@/lib/resources/subtitleStyles";
 import {
   MUSIC_MOODS,
   formatDuration,
@@ -30,6 +55,20 @@ import {
 function keyFromUrl(fileUrl: string): string {
   const marker = "/api/media/";
   return fileUrl.startsWith(marker) ? fileUrl.slice(marker.length) : fileUrl;
+}
+
+/** "inset:6%;border:1px solid #fff" → React 的 style 物件 */
+function cssTextToStyle(cssText: string): CSSProperties {
+  const style: Record<string, string> = {};
+  for (const rule of cssText.split(";")) {
+    const at = rule.indexOf(":");
+    if (at < 0) continue;
+    const name = rule.slice(0, at).trim();
+    const value = rule.slice(at + 1).trim();
+    if (!name || !value) continue;
+    style[name.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())] = value;
+  }
+  return style as CSSProperties;
 }
 
 type Phase = "idle" | "uploading" | "rendering";
@@ -57,32 +96,22 @@ const SPEED_OPTIONS: { value: Speed; label: string }[] = [
   { value: 8, label: "8 倍" },
 ];
 
-const EFFECTS = FILTER_PRESETS.map((p) => ({
-  value: p.id,
-  label: p.label,
-  description: p.description,
-  preview: p.css,
-}));
-
 const TRANSITIONS = [
   { value: "none", label: "無" },
   { value: "fade", label: "淡入淡出" },
   { value: "zoom", label: "緩慢推近" },
 ];
 
-const CAPTION_STYLES = CAPTION_STYLE_LABELS.map((s) => ({
-  value: s.id,
-  label: s.label,
-  fill: s.cssFill,
-  shadow: s.cssShadow,
-}));
+// 縮圖用的示意底圖(模擬膚色與品牌色的漸層)
+const SWATCH_BG =
+  "linear-gradient(135deg,#f6d9c9 0%,#e8b4a0 40%,#b76e79 75%,#5c3a4a 100%)";
 
 type Recommendation = {
   templateName: string | null;
   filterPreset: string;
+  decoration: string;
   beauty: string;
   subtitleStyle: string;
-  subtitleFont: string;
   caption: string;
   musicMood: string;
   reason: string;
@@ -91,11 +120,14 @@ type Recommendation = {
 // 套用 AI 建議前的設定快照(供「復原」使用)
 type Snapshot = {
   effect: string;
+  decoration: string;
   beauty: string;
-  captionStyle: string;
-  captionFont: string;
+  subtitleStyle: string;
+  captionColor: string | null;
+  captionFont: string | null;
   caption: string;
-  query: string;
+  mood: string;
+  musicKey: string | null;
 };
 
 export default function EditClient({
@@ -104,12 +136,13 @@ export default function EditClient({
   initialSourceKey,
   initialSpeed,
   initialCaption,
-  initialCaptionStyle,
+  initialSubtitleStyle,
+  initialCaptionColor,
   initialCaptionFont,
   initialEffect,
+  initialDecoration,
   initialBeauty,
   initialTransition,
-  initialMusicHint,
   initialMood,
   initialMusicKey,
 }: {
@@ -118,12 +151,13 @@ export default function EditClient({
   initialSourceKey: string | null;
   initialSpeed: Speed;
   initialCaption: string;
-  initialCaptionStyle: string;
-  initialCaptionFont: string;
+  initialSubtitleStyle: string;
+  initialCaptionColor: string | null;
+  initialCaptionFont: string | null;
   initialEffect: string;
+  initialDecoration: string;
   initialBeauty: string;
   initialTransition: string;
-  initialMusicHint: string;
   initialMood: string;
   initialMusicKey: string | null;
 }) {
@@ -132,12 +166,26 @@ export default function EditClient({
   const [sourceDuration, setSourceDuration] = useState<number | null>(null);
   const [speed, setSpeed] = useState<Speed>(initialSpeed);
   const [effect, setEffect] = useState(initialEffect);
+  const [decoration, setDecoration] = useState(initialDecoration);
   const [beauty, setBeauty] = useState(initialBeauty);
   const [transition, setTransition] = useState(initialTransition);
   const [caption, setCaption] = useState(initialCaption);
-  const [captionStyle, setCaptionStyle] = useState(initialCaptionStyle);
-  const [captionFont, setCaptionFont] = useState(initialCaptionFont);
+  const [subtitleStyle, setSubtitleStyle] = useState(initialSubtitleStyle);
   const [musicKey, setMusicKey] = useState<string | null>(initialMusicKey);
+
+  // 字幕「微調」:null 代表沿用風格自帶的字體/配色
+  const [captionColor, setCaptionColor] = useState<string | null>(
+    initialCaptionColor
+  );
+  const [captionFont, setCaptionFont] = useState<string | null>(
+    initialCaptionFont
+  );
+  const [showTune, setShowTune] = useState(false);
+
+  // 三個選擇器的分頁籤("mood" = 依目前氛圍推薦)
+  const [filterTab, setFilterTab] = useState("mood");
+  const [decorationTab, setDecorationTab] = useState("mood");
+  const [subtitleTab, setSubtitleTab] = useState("mood");
 
   // 依模板氛圍自動配樂(可換一首,也可展開清單自己挑)
   const [mood, setMood] = useState(initialMood);
@@ -151,11 +199,7 @@ export default function EditClient({
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [progress, setProgress] = useState(0);
-  const [uploadKind, setUploadKind] = useState<"video" | "music">("video");
   const [error, setError] = useState<string | null>(null);
-
-  // 免費音樂搜尋(模板會建議關鍵字)
-  const [query, setQuery] = useState(initialMusicHint);
 
   const cameraRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
@@ -169,6 +213,33 @@ export default function EditClient({
   // 目前選用的配樂(來自音樂庫時可顯示曲名與換一首)
   const currentTrack =
     library.find((t) => keyFromUrl(t.file_url) === musicKey) ?? null;
+
+  const activeFilter = filterById(effect);
+  const activeDecoration = decorationById(decoration);
+  const activeSubtitle = subtitleStyleById(subtitleStyle);
+  const previewFontStack = fontById(captionFont ?? activeSubtitle.fontId)
+    .cssStack;
+  const previewColor = captionColor
+    ? CAPTION_STYLE_LABELS.find((s) => s.id === captionColor)
+    : undefined;
+
+  const visibleFilters = useMemo(() => {
+    if (filterTab === "mood") return filtersByMood(mood);
+    if (filterTab === "all") return VISUAL_FILTERS;
+    return filtersByCategory(filterTab);
+  }, [filterTab, mood]);
+
+  const visibleDecorations = useMemo(() => {
+    if (decorationTab === "mood") return decorationsByMood(mood);
+    if (decorationTab === "all") return DECORATIONS;
+    return decorationsByCategory(decorationTab);
+  }, [decorationTab, mood]);
+
+  const visibleSubtitles = useMemo(() => {
+    if (subtitleTab === "mood") return subtitleStylesByMood(mood);
+    if (subtitleTab === "all") return SUBTITLE_STYLES;
+    return subtitleStylesByCategory(subtitleTab);
+  }, [subtitleTab, mood]);
 
   // 載入音樂庫;若尚未指定配樂,依模板氛圍隨機挑一首
   useEffect(() => {
@@ -237,7 +308,6 @@ export default function EditClient({
       return;
     }
     try {
-      setUploadKind("video");
       setPhase("uploading");
       setProgress(0);
       const key = await uploadToR2(file, {
@@ -292,16 +362,22 @@ export default function EditClient({
     // 先存下目前設定,套用後可一鍵復原
     setUndoState({
       effect,
+      decoration,
       beauty,
-      captionStyle,
+      subtitleStyle,
+      captionColor,
       captionFont,
       caption,
-      query,
+      mood,
+      musicKey,
     });
     setEffect(advice.filterPreset);
+    setDecoration(advice.decoration);
     setBeauty(advice.beauty);
-    setCaptionStyle(advice.subtitleStyle);
-    setCaptionFont(advice.subtitleFont);
+    setSubtitleStyle(advice.subtitleStyle);
+    // 字幕風格自帶字體與配色,微調的覆蓋值一併清掉才看得到建議的樣子
+    setCaptionColor(null);
+    setCaptionFont(null);
     if (advice.caption) setCaption(advice.caption);
     // AI 指定的氛圍 → 自動從音樂庫配一首
     if (advice.musicMood) {
@@ -315,11 +391,14 @@ export default function EditClient({
   function undoAdvice() {
     if (!undoState) return;
     setEffect(undoState.effect);
+    setDecoration(undoState.decoration);
     setBeauty(undoState.beauty);
-    setCaptionStyle(undoState.captionStyle);
+    setSubtitleStyle(undoState.subtitleStyle);
+    setCaptionColor(undoState.captionColor);
     setCaptionFont(undoState.captionFont);
     setCaption(undoState.caption);
-    setQuery(undoState.query);
+    setMood(undoState.mood);
+    setMusicKey(undoState.musicKey);
     setUndoState(null);
   }
 
@@ -336,9 +415,11 @@ export default function EditClient({
           sourceKey,
           speed,
           caption,
-          captionStyle,
-          captionFont,
+          subtitleStyle,
+          captionColor: captionColor ?? undefined,
+          captionFont: captionFont ?? undefined,
           effect,
+          decoration,
           beauty,
           transition,
           musicKey: musicKey ?? undefined,
@@ -365,6 +446,7 @@ export default function EditClient({
           正在套用{speed > 1 ? `縮時 ${speed} 倍、` : ""}
           {beauty !== "off" ? "磨皮、" : ""}
           {effect !== "none" ? "風格濾鏡、" : ""}
+          {decoration !== "none" ? "畫面裝飾、" : ""}
           {caption.trim() ? "美術字幕、" : ""}
           {musicKey ? "背景音樂、" : ""}直式構圖,
           約需 1~3 分鐘,請不要關閉此頁面。
@@ -372,10 +454,6 @@ export default function EditClient({
       </main>
     );
   }
-
-  const activeCaptionStyle =
-    CAPTION_STYLES.find((s) => s.value === captionStyle) ?? CAPTION_STYLES[0];
-  const activeEffect = EFFECTS.find((e) => e.value === effect) ?? EFFECTS[0];
 
   return (
     <main className="mx-auto max-w-md px-4 py-6">
@@ -391,15 +469,40 @@ export default function EditClient({
 
         {sourceKey ? (
           <div className="mt-4">
-            <video
-              src={`/api/media/${sourceKey}`}
-              controls
-              muted
-              playsInline
-              preload="metadata"
-              style={{ filter: activeEffect.preview || undefined }}
-              className="mx-auto w-full max-w-[220px] rounded-xl border border-white/10"
-            />
+            {/* 濾鏡與裝飾都疊在預覽上,所見即成品 */}
+            <div className="relative mx-auto w-full max-w-[220px] overflow-hidden rounded-xl border border-white/10">
+              <video
+                src={`/api/media/${sourceKey}`}
+                controls
+                muted
+                playsInline
+                preload="metadata"
+                style={{ filter: activeFilter.css || undefined }}
+                className="block w-full"
+              />
+              <DecorationArt
+                spec={activeDecoration}
+                className="pointer-events-none"
+              />
+              {caption.trim() && (
+                <p
+                  className="pointer-events-none absolute inset-x-2 bottom-8 text-center text-[13px] leading-tight"
+                  style={{
+                    fontFamily: previewFontStack,
+                    fontWeight: activeSubtitle.cssWeight,
+                    color: previewColor?.cssFill ?? activeSubtitle.cssColor,
+                    textShadow:
+                      previewColor?.cssShadow ?? activeSubtitle.cssShadow,
+                    background: activeSubtitle.cssBackground,
+                    ...(previewColor
+                      ? {}
+                      : cssTextToStyle(activeSubtitle.cssExtra ?? "")),
+                  }}
+                >
+                  {caption.trim()}
+                </p>
+              )}
+            </div>
             <div className="mt-3 flex items-center justify-center gap-4 text-sm">
               {sourceDuration != null && (
                 <span className="text-foreground/50">
@@ -448,7 +551,7 @@ export default function EditClient({
               />
             </div>
             <p className="mt-2 text-center text-sm tabular-nums text-foreground/60">
-              {uploadKind === "music" ? "音樂" : "影片"}上傳中 {progress}%
+              影片上傳中 {progress}%
             </p>
           </div>
         )}
@@ -504,12 +607,10 @@ export default function EditClient({
                 {advice.templateName && (
                   <Row label="風格" value={advice.templateName} />
                 )}
+                <Row label="色調" value={filterById(advice.filterPreset).label} />
                 <Row
-                  label="色調"
-                  value={
-                    FILTER_PRESETS.find((f) => f.id === advice.filterPreset)
-                      ?.label ?? advice.filterPreset
-                  }
+                  label="裝飾"
+                  value={decorationById(advice.decoration).label}
                 />
                 <Row
                   label="磨皮"
@@ -519,11 +620,8 @@ export default function EditClient({
                   }
                 />
                 <Row
-                  label="字體"
-                  value={
-                    CAPTION_FONTS.find((f) => f.id === advice.subtitleFont)
-                      ?.label ?? advice.subtitleFont
-                  }
+                  label="字幕"
+                  value={subtitleStyleById(advice.subtitleStyle).label}
                 />
                 {advice.caption && (
                   <Row label="文案" value={`「${advice.caption}」`} />
@@ -552,7 +650,7 @@ export default function EditClient({
           ) : (
             <>
               <p className="mt-1.5 text-sm text-foreground/55">
-                讓 AI 看一下你的素材,推薦最適合的色調、磨皮、字體與文案 —
+                讓 AI 看一下你的素材,推薦最適合的色調、裝飾、字幕與文案 —
                 套用與否都由你決定。
               </p>
               <div className="mt-3 flex gap-3">
@@ -619,32 +717,43 @@ export default function EditClient({
         </div>
       </section>
 
-      {/* 畫面風格 */}
+      {/* 畫面色調 */}
       <section className="mt-4 rounded-3xl border border-white/10 bg-white/5 p-5">
         <h2 className="flex items-center gap-2 font-medium">
           <Wand2 className="size-4 text-brand" />
-          畫面風格
+          畫面色調
         </h2>
+
+        <TabRow
+          tabs={FILTER_CATEGORIES}
+          value={filterTab}
+          onChange={setFilterTab}
+          disabled={busy}
+        />
+
         <div className="mt-3 grid grid-cols-4 gap-2">
-          {EFFECTS.map((opt) => (
+          {visibleFilters.map((opt) => (
             <button
-              key={opt.value}
+              key={opt.id}
               type="button"
               disabled={busy}
-              onClick={() => setEffect(opt.value)}
+              onClick={() => setEffect(opt.id)}
               className={`overflow-hidden rounded-xl border text-center transition ${
-                effect === opt.value
+                effect === opt.id
                   ? "border-brand ring-2 ring-brand/30"
                   : "border-white/15 hover:border-brand/60"
               }`}
             >
               <span
-                className="block h-10 w-full bg-[linear-gradient(135deg,#f6d9c9_0%,#e8b4a0_40%,#b76e79_75%,#5c3a4a_100%)]"
-                style={{ filter: opt.preview || undefined }}
+                className="block h-10 w-full"
+                style={{
+                  background: SWATCH_BG,
+                  filter: opt.css || undefined,
+                }}
               />
               <span
                 className={`block px-1 py-1.5 text-[11px] leading-tight ${
-                  effect === opt.value ? "text-brand" : "text-foreground/60"
+                  effect === opt.id ? "text-brand" : "text-foreground/60"
                 }`}
               >
                 {opt.label}
@@ -653,7 +762,13 @@ export default function EditClient({
           ))}
         </div>
         <p className="mt-2 text-xs text-foreground/45">
-          {activeEffect.description}
+          {activeFilter.description}
+          {filterTab === "mood" && (
+            <>
+              {" "}— 目前只顯示適合「{moodById(mood).label}」的,點「全部」看完整
+              {VISUAL_FILTERS.length} 種。
+            </>
+          )}
         </p>
 
         <h3 className="mt-5 text-sm text-foreground/70">開場 / 結尾轉場</h3>
@@ -676,6 +791,59 @@ export default function EditClient({
         </div>
       </section>
 
+      {/* 畫面裝飾 */}
+      <section className="mt-4 rounded-3xl border border-white/10 bg-white/5 p-5">
+        <h2 className="flex items-center gap-2 font-medium">
+          <Frame className="size-4 text-brand" />
+          畫面裝飾
+        </h2>
+
+        <TabRow
+          tabs={DECORATION_CATEGORIES}
+          value={decorationTab}
+          onChange={setDecorationTab}
+          disabled={busy}
+        />
+
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          {visibleDecorations.map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              disabled={busy || !opt.available}
+              onClick={() => setDecoration(opt.id)}
+              className={`overflow-hidden rounded-xl border text-center transition disabled:cursor-not-allowed ${
+                decoration === opt.id
+                  ? "border-brand ring-2 ring-brand/30"
+                  : "border-white/15 hover:border-brand/60"
+              } ${opt.available ? "" : "opacity-45"}`}
+            >
+              <span
+                className="relative block h-16 w-full"
+                style={{ background: SWATCH_BG }}
+              >
+                <DecorationArt spec={opt} />
+              </span>
+              <span
+                className={`block px-1 py-1.5 text-[11px] leading-tight ${
+                  decoration === opt.id ? "text-brand" : "text-foreground/60"
+                }`}
+              >
+                {opt.label}
+                {!opt.available && (
+                  <span className="block text-[10px] text-foreground/35">
+                    即將推出
+                  </span>
+                )}
+              </span>
+            </button>
+          ))}
+        </div>
+        <p className="mt-2 text-xs text-foreground/45">
+          {activeDecoration.description}
+        </p>
+      </section>
+
       {/* 美術字幕 */}
       <section className="mt-4 rounded-3xl border border-white/10 bg-white/5 p-5">
         <h2 className="flex items-center gap-2 font-medium">
@@ -691,58 +859,120 @@ export default function EditClient({
           placeholder="輸入想放在影片上的文字(可留空)"
           className="mt-3 w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-sm outline-none transition placeholder:text-foreground/30 focus:border-brand"
         />
-        {/* 字體 */}
-        <div className="mt-3 grid grid-cols-4 gap-2">
-          {CAPTION_FONTS.map((opt) => (
+
+        <TabRow
+          tabs={SUBTITLE_CATEGORIES}
+          value={subtitleTab}
+          onChange={setSubtitleTab}
+          disabled={busy}
+        />
+
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          {visibleSubtitles.map((opt) => (
             <button
               key={opt.id}
               type="button"
-              disabled={busy}
-              onClick={() => setCaptionFont(opt.id)}
-              style={{ fontFamily: opt.cssStack }}
-              className={`rounded-xl border py-2.5 text-sm transition ${
-                captionFont === opt.id
-                  ? "border-brand bg-brand text-white"
-                  : "border-white/15 text-foreground/60 hover:border-brand/60"
-              }`}
+              disabled={busy || !opt.available}
+              onClick={() => {
+                setSubtitleStyle(opt.id);
+                // 換整組風格時把微調的覆蓋清掉,才看得到這組原本的樣子
+                setCaptionColor(null);
+                setCaptionFont(null);
+              }}
+              className={`overflow-hidden rounded-xl border text-center transition disabled:cursor-not-allowed ${
+                subtitleStyle === opt.id
+                  ? "border-brand ring-2 ring-brand/30"
+                  : "border-white/15 hover:border-brand/60"
+              } ${opt.available ? "" : "opacity-45"}`}
             >
-              {opt.label}
+              <SubtitleSwatch style={opt} />
+              <span
+                className={`block px-1 py-1.5 text-[11px] leading-tight ${
+                  subtitleStyle === opt.id ? "text-brand" : "text-foreground/60"
+                }`}
+              >
+                {opt.label}
+                {!opt.available && (
+                  <span className="block text-[10px] text-foreground/35">
+                    即將推出
+                  </span>
+                )}
+              </span>
             </button>
           ))}
         </div>
+        <p className="mt-2 text-xs text-foreground/45">
+          {activeSubtitle.description}
+        </p>
 
-        {/* 配色 */}
-        <div className="mt-2 flex flex-wrap gap-2">
-          {CAPTION_STYLES.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              disabled={busy}
-              onClick={() => setCaptionStyle(opt.value)}
-              className={`rounded-full border px-3.5 py-1.5 text-xs transition ${
-                captionStyle === opt.value
-                  ? "border-brand bg-brand text-white"
-                  : "border-white/15 text-foreground/60 hover:border-brand/60"
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-        {caption.trim() && (
-          <p
-            className="mt-3 rounded-xl bg-black/50 px-4 py-4 text-center text-xl font-bold leading-snug"
-            style={{
-              color: activeCaptionStyle.fill,
-              textShadow: activeCaptionStyle.shadow,
-              fontFamily: CAPTION_FONTS.find((f) => f.id === captionFont)
-                ?.cssStack,
-            }}
-          >
-            {caption.trim()}
-          </p>
+        {/* 微調:單獨換字體或配色 */}
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => setShowTune((v) => !v)}
+          className="mt-4 flex items-center gap-1.5 text-sm text-foreground/55 transition hover:text-brand"
+        >
+          <SlidersHorizontal className="size-3.5" />
+          {showTune ? "收起微調" : "微調字體與配色"}
+          {(captionFont || captionColor) && (
+            <span className="rounded-full bg-brand/20 px-2 py-0.5 text-[10px] text-brand">
+              已調整
+            </span>
+          )}
+        </button>
+
+        {showTune && (
+          <div className="mt-3 space-y-3 rounded-2xl border border-white/10 bg-background/40 p-4">
+            <div>
+              <p className="text-xs text-foreground/50">字體</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <ChipButton
+                  active={captionFont === null}
+                  disabled={busy}
+                  onClick={() => setCaptionFont(null)}
+                >
+                  用風格預設
+                </ChipButton>
+                {CAPTION_FONTS.map((opt) => (
+                  <ChipButton
+                    key={opt.id}
+                    active={captionFont === opt.id}
+                    disabled={busy}
+                    onClick={() => setCaptionFont(opt.id)}
+                    style={{ fontFamily: opt.cssStack }}
+                  >
+                    {opt.label}
+                  </ChipButton>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs text-foreground/50">配色</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <ChipButton
+                  active={captionColor === null}
+                  disabled={busy}
+                  onClick={() => setCaptionColor(null)}
+                >
+                  用風格預設
+                </ChipButton>
+                {CAPTION_STYLE_LABELS.map((opt) => (
+                  <ChipButton
+                    key={opt.id}
+                    active={captionColor === opt.id}
+                    disabled={busy}
+                    onClick={() => setCaptionColor(opt.id)}
+                  >
+                    {opt.label}
+                  </ChipButton>
+                ))}
+              </div>
+            </div>
+          </div>
         )}
-        <p className="mt-2 text-xs text-foreground/40">
+
+        <p className="mt-3 text-xs text-foreground/40">
           自動斷行(最多三行),顯示在影片下方。預覽的字體外觀以成品為準。
         </p>
       </section>
@@ -911,7 +1141,6 @@ export default function EditClient({
         </p>
       </section>
 
-
       {error && (
         <p className="mt-4 rounded-xl border border-red-400/30 bg-red-400/10 px-4 py-3.5 text-sm text-red-200">
           {error}
@@ -957,6 +1186,140 @@ export default function EditClient({
         }}
       />
     </main>
+  );
+}
+
+/** 「推薦 / 全部 / 各分類」的分頁籤 */
+function TabRow({
+  tabs,
+  value,
+  onChange,
+  disabled,
+}: {
+  tabs: { id: string; label: string }[];
+  value: string;
+  onChange: (id: string) => void;
+  disabled: boolean;
+}) {
+  const all = [
+    { id: "mood", label: "推薦" },
+    { id: "all", label: "全部" },
+    ...tabs,
+  ];
+  return (
+    <div className="mt-3 flex flex-wrap gap-1.5">
+      {all.map((tab) => (
+        <button
+          key={tab.id}
+          type="button"
+          disabled={disabled}
+          onClick={() => onChange(tab.id)}
+          className={`rounded-full border px-3 py-1 text-xs transition ${
+            value === tab.id
+              ? "border-brand/60 bg-brand/15 text-brand"
+              : "border-white/10 text-foreground/45 hover:border-brand/40"
+          }`}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** 裝飾的視覺呈現(縮圖與影片預覽共用) */
+function DecorationArt({
+  spec,
+  className = "",
+}: {
+  spec: DecorationSpec;
+  className?: string;
+}) {
+  if (!spec.available || spec.id === "none") return null;
+
+  return (
+    <>
+      {spec.previewCss && (
+        <span
+          className={`absolute inset-0 ${className}`}
+          style={cssTextToStyle(spec.previewCss)}
+        />
+      )}
+      {spec.render.kind === "path" && (
+        <svg
+          viewBox="0 0 100 100"
+          preserveAspectRatio="xMidYMid meet"
+          className={`absolute inset-0 size-full ${className}`}
+          aria-hidden
+        >
+          {spec.render.paths.map((d, i) => (
+            <path
+              key={i}
+              d={d}
+              fill="none"
+              strokeWidth={2}
+              strokeLinecap="round"
+              stroke={`rgb(${spec.render.kind === "path" ? spec.render.color.slice(0, 3).join(",") : "255,255,255"})`}
+            />
+          ))}
+        </svg>
+      )}
+    </>
+  );
+}
+
+/** 字幕風格的縮圖(用該風格的預覽 CSS 畫「美字」兩字) */
+function SubtitleSwatch({ style }: { style: SubtitleStyle }) {
+  return (
+    <span
+      className="flex h-12 w-full items-center justify-center"
+      style={{ background: SWATCH_BG }}
+    >
+      <span
+        className="px-2 py-0.5 text-sm leading-none"
+        style={{
+          fontFamily: fontById(style.fontId).cssStack,
+          fontWeight: style.cssWeight,
+          color: style.cssColor,
+          textShadow: style.cssShadow,
+          background: style.cssBackground,
+          borderRadius: 4,
+          ...cssTextToStyle(style.cssExtra ?? ""),
+        }}
+      >
+        美字
+      </span>
+    </span>
+  );
+}
+
+function ChipButton({
+  active,
+  disabled,
+  onClick,
+  style,
+  children,
+}: {
+  active: boolean;
+  disabled: boolean;
+  onClick: () => void;
+  style?: CSSProperties;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      style={style}
+      className={`rounded-full border px-3.5 py-1.5 text-xs transition ${
+        active
+          ? "border-brand bg-brand text-white"
+          : "border-white/15 text-foreground/60 hover:border-brand/60"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 

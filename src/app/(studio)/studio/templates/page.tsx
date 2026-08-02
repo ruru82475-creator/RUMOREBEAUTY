@@ -1,6 +1,8 @@
-import { Clock, FastForward, Sparkles, Wand2 } from "lucide-react";
+import { Clock, FastForward, Frame, Sparkles, Wand2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
-import { beautyById, presetById } from "@/lib/video/presets";
+import { beautyById } from "@/lib/video/presets";
+import { filterById } from "@/lib/resources/filters";
+import { decorationById } from "@/lib/resources/decorations";
 import { createProjectFromTemplate } from "./actions";
 
 export const metadata = { title: "選擇風格模板 | GlowStudio" };
@@ -13,6 +15,7 @@ type TemplateRow = {
   edit_preset: {
     beauty?: string;
     effect?: string;
+    decoration?: string;
     speed?: number;
     transition?: string;
     music_hint?: string;
@@ -55,8 +58,9 @@ export default async function TemplatesPage() {
 
 function TemplateCard({ template }: { template: TemplateRow }) {
   const preset = template.edit_preset ?? {};
-  const filter = presetById(preset.effect ?? "none");
+  const filter = filterById(preset.effect ?? "none");
   const beauty = beautyById(preset.beauty ?? "off");
+  const decoration = decorationById(preset.decoration ?? "none");
 
   return (
     <article className="flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/5">
@@ -88,6 +92,12 @@ function TemplateCard({ template }: { template: TemplateRow }) {
             <FastForward className="size-3.5 text-brand" />
             {preset.speed && preset.speed > 1 ? `${preset.speed} 倍速` : "原速"}
           </span>
+          {decoration.id !== "none" && (
+            <span className="flex items-center gap-1.5 rounded-full border border-white/10 px-3 py-1">
+              <Frame className="size-3.5 text-brand" />
+              {decoration.label}
+            </span>
+          )}
           {template.total_duration_sec && (
             <span className="flex items-center gap-1.5 rounded-full border border-white/10 px-3 py-1">
               <Clock className="size-3.5 text-brand" />

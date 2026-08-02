@@ -8,7 +8,10 @@ import { promisify } from "node:util";
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegPath from "ffmpeg-static";
 import ffprobeStatic from "ffprobe-static";
-import { beautyById, presetById } from "./presets";
+import { beautyById } from "./presets";
+import { decorationFfmpegChain, renderDecorationPng } from "./decoration";
+import { filterById } from "@/lib/resources/filters";
+import type { SubtitleAnimation } from "@/lib/resources/subtitleStyles";
 
 // ffmpeg / ffprobe 影片處理工具
 // 輸入一律用 R2 預簽名 URL,不把整支影片下載進伺服器(省時間與記憶體)
@@ -104,9 +107,23 @@ export async function extractFrames(
 
 export type TransitionKind = "none" | "fade" | "zoom";
 
+/** 字幕進場動畫 → overlay 的 y 座標表達式(基準位置為底部往上 200px) */
+function captionYExpression(animation: SubtitleAnimation): string {
+  switch (animation) {
+    case "slide-up":
+      // 從基準下方 120px 滑上來,0.6 秒到定位
+      return "'H-h-200+120*max(0,(0.6-t)/0.6)'";
+    case "pop":
+      // 快速就位帶一點回彈感
+      return "'H-h-200+40*max(0,(0.25-t)/0.25)'";
+    default:
+      return "H-h-200";
+  }
+}
+
 /**
- * 單支素材後製:縮時 + 直式構圖 + 風格濾鏡 + 轉場 + 美術字幕 + 背景音樂
- * 字幕以 PNG 疊圖方式合成(不依賴 ffmpeg 的 drawtext)
+ * 單支素材後製:縮時 + 直式構圖 + 風格濾鏡 + 裝飾 + 轉場 + 美術字幕 + 背景音樂
+ * 字幕與裝飾都以 PNG 疊圖方式合成(不依賴 ffmpeg 的 drawtext)
  * 回傳輸出檔的暫存路徑(呼叫端負責讀取後刪除)
  */
 export async function renderEdit(params: {
@@ -116,7 +133,9 @@ export async function renderEdit(params: {
   effect?: string;
   beauty?: string;
   transition?: TransitionKind;
+  decoration?: string | null;
   captionPngPath?: string | null;
+  captionAnimation?: SubtitleAnimation;
   musicUrl?: string | null;
 }): Promise<string> {
   const {
@@ -126,7 +145,9 @@ export async function renderEdit(params: {
     effect = "none",
     beauty = "off",
     transition = "fade",
+    decoration,
     captionPngPath,
+    captionAnimation = "none",
     musicUrl,
   } = params;
 
@@ -143,7 +164,7 @@ export async function renderEdit(params: {
     "fps=30",
   ];
 
-  // 美顏磨皮 → 風格濾鏡(只加入這個 ffmpeg 版本支援的濾鏡)
+  // 美顏磨皮 → 風格濾鏡 → 裝飾裡走原生濾鏡的部分(只加入這個 ffmpeg 版本支援的)
   const addFilters = (list: string[]) => {
     for (const filter of list) {
       const name = filter.split("=")[0];
@@ -151,7 +172,8 @@ export async function renderEdit(params: {
     }
   };
   addFilters(beautyById(beauty).chain);
-  addFilters(presetById(effect).chain);
+  addFilters(filterById(effect).chain);
+  addFilters(decorationFfmpegChain(decoration));
 
   // 轉場:淡入淡出 / 緩慢推進
   if (transition === "zoom" && has("zoompan")) {
@@ -169,72 +191,111 @@ export async function renderEdit(params: {
     );
   }
 
-  // 組 filter_complex:視訊鏈 →(可選)疊上字幕 PNG
+  // 裝飾圖層(邊框、花紋、漸層覆蓋…)先畫成透明 PNG 再疊圖
+  const overlay = decoration ? renderDecorationPng(decoration) : null;
+  let decorationFile: string | null = null;
+  if (overlay) {
+    decorationFile = path.join(
+      os.tmpdir(),
+      `gs-deco-${crypto.randomUUID()}.png`
+    );
+    await fs.writeFile(decorationFile, overlay.buffer);
+  }
+
+  // 組 filter_complex:視訊鏈 → 疊裝飾 → 疊字幕(字幕永遠在最上層)
   const inputs: string[] = [videoUrl];
   if (musicUrl) inputs.push(musicUrl);
+  const decorationIndex = decorationFile ? inputs.length : -1;
+  if (decorationFile) inputs.push(decorationFile);
   const captionIndex = captionPngPath ? inputs.length : -1;
   if (captionPngPath) inputs.push(captionPngPath);
+  // 靜態圖必須標成無限循環才能疊滿整支影片
+  const loopIndexes = new Set(
+    [decorationIndex, captionIndex].filter((i) => i >= 0)
+  );
 
   const complex: string[] = [`[0:v]${chain.join(",")}[vmain]`];
   let videoLabel = "[vmain]";
-  if (captionIndex >= 0 && has("overlay")) {
+
+  if (decorationIndex >= 0 && overlay && has("overlay")) {
     complex.push(
-      `[vmain][${captionIndex}:v]overlay=(W-w)/2:H-h-200:format=auto[vout]`
+      `${videoLabel}[${decorationIndex}:v]overlay=x=${overlay.x}:y=${overlay.y}:format=auto[vdeco]`
+    );
+    videoLabel = "[vdeco]";
+  }
+
+  if (captionIndex >= 0 && has("overlay")) {
+    let captionLabel = `[${captionIndex}:v]`;
+    // 進場動畫需要透明度淡入,先在字幕串流上做 alpha fade
+    if (captionAnimation !== "none" && has("fade")) {
+      const duration = captionAnimation === "pop" ? 0.25 : 0.5;
+      complex.push(
+        `[${captionIndex}:v]format=rgba,fade=t=in:st=0:d=${duration}:alpha=1[cap]`
+      );
+      captionLabel = "[cap]";
+    }
+    complex.push(
+      `${videoLabel}${captionLabel}overlay=x=(W-w)/2:y=${captionYExpression(
+        captionAnimation
+      )}:format=auto[vout]`
     );
     videoLabel = "[vout]";
   }
 
-  await new Promise<void>((resolve, reject) => {
-    const command = ffmpeg();
-    inputs.forEach((input, i) => {
-      command.input(input);
-      // 字幕 PNG 是靜態圖,需標成無限循環才能疊滿整支影片
-      if (i === captionIndex) command.inputOptions(["-loop", "1"]);
-    });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const command = ffmpeg();
+      inputs.forEach((input, i) => {
+        command.input(input);
+        if (loopIndexes.has(i)) command.inputOptions(["-loop", "1"]);
+      });
 
-    const output = [
-      "-filter_complex",
-      complex.join(";"),
-      "-map",
-      videoLabel,
-      "-t",
-      outDur.toFixed(2),
-      "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-crf",
-      "26",
-      "-pix_fmt",
-      "yuv420p",
-      "-movflags",
-      "+faststart",
-    ];
-
-    if (musicUrl) {
-      // 以背景音樂取代原始聲音(縮時後原聲會變調),結尾淡出
-      const fadeStart = Math.max(outDur - 1.5, 0);
-      output.push(
+      const output = [
+        "-filter_complex",
+        complex.join(";"),
         "-map",
-        "1:a",
-        "-af",
-        `afade=t=out:st=${fadeStart.toFixed(2)}:d=1.5`,
-        "-c:a",
-        "aac",
-        "-b:a",
-        "128k",
-        "-shortest"
-      );
-    } else {
-      output.push("-an");
-    }
+        videoLabel,
+        "-t",
+        outDur.toFixed(2),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "26",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+      ];
 
-    command
-      .outputOptions(output)
-      .on("end", () => resolve())
-      .on("error", (err) => reject(new Error(`後製失敗(${err.message})`)))
-      .save(outPath);
-  });
+      if (musicUrl) {
+        // 以背景音樂取代原始聲音(縮時後原聲會變調),結尾淡出
+        const fadeStart = Math.max(outDur - 1.5, 0);
+        output.push(
+          "-map",
+          "1:a",
+          "-af",
+          `afade=t=out:st=${fadeStart.toFixed(2)}:d=1.5`,
+          "-c:a",
+          "aac",
+          "-b:a",
+          "128k",
+          "-shortest"
+        );
+      } else {
+        output.push("-an");
+      }
+
+      command
+        .outputOptions(output)
+        .on("end", () => resolve())
+        .on("error", (err) => reject(new Error(`後製失敗(${err.message})`)))
+        .save(outPath);
+    });
+  } finally {
+    if (decorationFile) await fs.unlink(decorationFile).catch(() => {});
+  }
 
   return outPath;
 }

@@ -28,16 +28,22 @@ export async function createProjectFromTemplate(templateId: string) {
 
   // 模板的風格預設直接成為專案的初始後製設定
   const preset = (template.edit_preset ?? {}) as Record<string, unknown>;
+  const text = (key: string, fallback: string) =>
+    typeof preset[key] === "string" ? (preset[key] as string) : fallback;
+
   const editConfig = {
     speed: typeof preset.speed === "number" ? preset.speed : 2,
-    effect: typeof preset.effect === "string" ? preset.effect : "none",
-    beauty: typeof preset.beauty === "string" ? preset.beauty : "off",
-    transition:
-      typeof preset.transition === "string" ? preset.transition : "fade",
+    effect: text("effect", "none"),
+    decoration: text("decoration", "none"),
+    beauty: text("beauty", "off"),
+    transition: text("transition", "fade"),
     caption: "",
-    caption_style:
-      typeof preset.caption_style === "string" ? preset.caption_style : "classic",
-    music_hint: typeof preset.music_hint === "string" ? preset.music_hint : "",
+    subtitle_style: text("subtitle_style", "classic-white"),
+    caption_color: null,
+    caption_font: null,
+    music_hint: text("music_hint", ""),
+    // 配樂氛圍:編輯頁會據此自動從音樂庫挑一首
+    mood: text("mood", "chill"),
     music_key: null,
   };
 

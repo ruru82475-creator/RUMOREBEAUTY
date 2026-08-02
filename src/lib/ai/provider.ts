@@ -2,12 +2,12 @@
 export type StyleRecommendation = {
   templateId: string | null;
   templateName: string | null;
-  filterPreset: string; // 對應 presets.ts 的色調 id
+  filterPreset: string; // 對應 resources/filters 的濾鏡 id
+  decoration: string; // 對應 resources/decorations 的裝飾 id
   beauty: string; // 磨皮強度 id
-  subtitleStyle: string; // 字幕配色 id
-  subtitleFont: string; // 字體 id
+  subtitleStyle: string; // 對應 resources/subtitleStyles 的風格 id(字體由風格自帶)
   caption: string; // AI 代擬的字幕文案
-  musicMood: string; // 音樂氛圍關鍵字(英文,供音樂搜尋)
+  musicMood: string; // 音樂氛圍(5 種其中之一,系統據此自動配樂)
   reason: string; // 一句話說明推薦原因(繁體中文)
 };
 
@@ -32,12 +32,12 @@ export interface AIProvider {
     userPrompt: string;
   }): Promise<string>;
 
-  /** 看影片代表幀 → 推薦整套後製風格(模板、濾鏡、字幕、配樂) */
+  /** 看影片代表幀 → 推薦整套後製風格(模板、濾鏡、裝飾、字幕、配樂) */
   analyzeAndRecommend(params: {
     images: { base64: string; mimeType: string }[];
     templates: RecommendCandidate[];
     filters: RecommendCandidate[];
-    fonts: RecommendCandidate[];
+    decorations: RecommendCandidate[];
     subtitleStyles: RecommendCandidate[];
   }): Promise<StyleRecommendation>;
 }

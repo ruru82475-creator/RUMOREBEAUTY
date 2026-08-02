@@ -3,9 +3,9 @@ import { z } from "zod";
 import { presignGet } from "@/lib/r2";
 import { extractFrames, probeVideo } from "@/lib/video/ffmpeg";
 import { requireCreatorForKey } from "@/lib/video/access";
-import { FILTER_PRESETS } from "@/lib/video/presets";
-import { CAPTION_FONTS } from "@/lib/video/fonts";
-import { CAPTION_STYLE_LABELS } from "@/lib/video/caption-styles";
+import { VISUAL_FILTERS } from "@/lib/resources/filters";
+import { DECORATIONS } from "@/lib/resources/decorations";
+import { SUBTITLE_STYLES } from "@/lib/resources/subtitleStyles";
 import { getAIProvider } from "@/lib/ai";
 import { tryConsumeAIQuota } from "@/lib/ai/rateLimiter";
 
@@ -65,20 +65,20 @@ export async function POST(request: Request) {
         name: t.name,
         description: t.description ?? "",
       })),
-      filters: FILTER_PRESETS.map((f) => ({
+      filters: VISUAL_FILTERS.map((f) => ({
         id: f.id,
         name: f.label,
         description: f.description,
       })),
-      fonts: CAPTION_FONTS.map((f) => ({
-        id: f.id,
-        name: f.label,
-        description: "",
+      decorations: DECORATIONS.filter((d) => d.available).map((d) => ({
+        id: d.id,
+        name: d.label,
+        description: d.description,
       })),
-      subtitleStyles: CAPTION_STYLE_LABELS.map((s) => ({
+      subtitleStyles: SUBTITLE_STYLES.filter((s) => s.available).map((s) => ({
         id: s.id,
         name: s.label,
-        description: "",
+        description: s.description,
       })),
     });
 
